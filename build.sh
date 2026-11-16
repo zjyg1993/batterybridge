@@ -16,7 +16,7 @@ clang -fobjc-arc -fblocks -O2 -Wall -Wextra -Wno-unused-parameter \
   -o "${bundle_dir}/Contents/MacOS/BatteryBridge"
 python3 - "${bundle_dir}/Contents/Info.plist" <<'PY'
 import plistlib,sys
-p={'CFBundleIdentifier':'local.batterybridge.agent','CFBundleName':'BatteryBridge','CFBundleDisplayName':'BatteryBridge','CFBundleExecutable':'BatteryBridge','CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.5.8','CFBundleVersion':'13','LSMinimumSystemVersion':'13.0','LSUIElement':True,'CFBundleIconFile':'AppIcon','NSHighResolutionCapable':True,'NSHumanReadableCopyright':'BatteryBridge · local utility · preview'}
+p={'CFBundleIdentifier':'local.batterybridge.agent','CFBundleName':'BatteryBridge','CFBundleDisplayName':'BatteryBridge','CFBundleExecutable':'BatteryBridge','CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.5.9','CFBundleVersion':'14','LSMinimumSystemVersion':'13.0','LSUIElement':True,'CFBundleIconFile':'AppIcon','NSHighResolutionCapable':True,'NSHumanReadableCopyright':'BatteryBridge · local utility · preview'}
 with open(sys.argv[1],'wb') as f:plistlib.dump(p,f)
 PY
 icon_work="${output_dir}/icon-work"

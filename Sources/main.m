@@ -10,7 +10,7 @@
 #import "Brand.h"
 
 static NSString *const BundleID=@"local.batterybridge.agent";
-static NSString *const Version=@"0.5.8-preview";
+static NSString *const Version=@"0.5.9-preview";
 static NSString *BBApplicationTitle(void){return [NSString stringWithFormat:@"BatteryBridge %@",Version];}
 static NSString *const InstallPath=@"/Applications/BatteryBridge.app";
 
@@ -391,15 +391,15 @@ static NSColor*BBGroupedColor(BOOL separator) {
 @end
 @protocol BBMappingTarget <NSObject>
 - (void)setDeviceMapping:(NSMenuItem*)sender;
+- (void)refreshDevice:(NSMenuItem*)sender;
+- (void)permission:(id)sender;
 @end
 @interface BBDeviceRow:NSView
 @property NSDictionary*record;
 @property(weak) id<BBMappingTarget> menuTarget;
 @property NSSwitch*mappingSwitch;
 @property NSButton*refreshButton;
-@property NSButton*moreButton;
 @property BOOL showsSeparator;
-- (NSMenu*)deviceMenu;
 - (instancetype)initWithFrame:(NSRect)frame record:(NSDictionary*)r;
 @end
 static NSTextField*cardLabel(NSString*text,NSRect frame,NSFont*font,NSColor*color){NSTextField*l=[NSTextField labelWithString:text];l.frame=frame;l.font=font;l.textColor=color;l.lineBreakMode=NSLineBreakByTruncatingTail;l.maximumNumberOfLines=1;return l;}
@@ -412,56 +412,30 @@ static NSTextField*cardLabel(NSString*text,NSRect frame,NSFont*font,NSColor*colo
         BOOL supported=[r[@"selectable"] boolValue]&&[r[@"identity"] length]>0;
         NSString*symbol=[r[@"category"] isEqual:@"Keyboard"]?@"keyboard":([r[@"category"] isEqual:@"Mouse"]?@"computermouse":@"cable.connector");
         NSImageView*icon=[[NSImageView alloc]initWithFrame:NSMakeRect(16,28,40,40)];icon.image=[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:r[@"category"]];icon.symbolConfiguration=[NSImageSymbolConfiguration configurationWithPointSize:28 weight:NSFontWeightRegular];icon.contentTintColor=connected?NSColor.secondaryLabelColor:NSColor.tertiaryLabelColor;[self addSubview:icon];
-        NSTextField*name=cardLabel(r[@"name"]?:@"USB 设备",NSMakeRect(72,56,w-342,20),[NSFont systemFontOfSize:13 weight:NSFontWeightMedium],NSColor.labelColor);name.toolTip=r[@"name"];[self addSubview:name];
+        NSTextField*name=cardLabel(r[@"name"]?:@"USB 设备",NSMakeRect(72,56,w-368,20),[NSFont systemFontOfSize:13 weight:NSFontWeightMedium],NSColor.labelColor);name.toolTip=r[@"name"];[self addSubview:name];
         NSString*connection=!connected?@"未连接":(needsPermission?@"需要输入监控授权":(fresh?@"已连接":@"接收器在线 · 等待电量"));
         NSColor*stateColor=connected&&needsPermission?NSColor.systemOrangeColor:NSColor.secondaryLabelColor;
-        [self addSubview:cardLabel(connection,NSMakeRect(72,35,w-342,17),[NSFont systemFontOfSize:11],stateColor)];
+        [self addSubview:cardLabel(connection,NSMakeRect(72,35,w-368,17),[NSFont systemFontOfSize:11],stateColor)];
         NSString*time=@"尚未读取";if(updated>0){NSString*clock=[NSDateFormatter localizedStringFromDate:[NSDate dateWithTimeIntervalSince1970:updated] dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterShortStyle];time=[NSString stringWithFormat:@"%@%@",connected&&fresh?@"更新于 ":@"上次读取 ",clock];}
-        [self addSubview:cardLabel(time,NSMakeRect(72,16,w-342,15),[NSFont systemFontOfSize:10],NSColor.tertiaryLabelColor)];
+        [self addSubview:cardLabel(time,NSMakeRect(72,16,w-368,15),[NSFont systemFontOfSize:10],NSColor.tertiaryLabelColor)];
         NSString*percent=(connected&&fresh&&r[@"percent"])?[NSString stringWithFormat:@"%@%%",r[@"percent"]]:@"—";
-        NSTextField*battery=cardLabel(percent,NSMakeRect(w-260,48,80,26),[NSFont monospacedDigitSystemFontOfSize:20 weight:NSFontWeightRegular],connected?NSColor.labelColor:NSColor.secondaryLabelColor);battery.alignment=NSTextAlignmentRight;[self addSubview:battery];
-        NSTextField*charge=cardLabel(BBChargeStatus(r),NSMakeRect(w-280,27,100,16),[NSFont systemFontOfSize:10],connected&&fresh&&[r[@"charging"] boolValue]?NSColor.systemGreenColor:NSColor.secondaryLabelColor);charge.alignment=NSTextAlignmentRight;charge.accessibilityIdentifier=@"DeviceChargingStatus";[self addSubview:charge];
-        NSTextField*mapLabel=cardLabel(@"系统映射",NSMakeRect(w-161,60,62,15),[NSFont systemFontOfSize:10],NSColor.secondaryLabelColor);mapLabel.alignment=NSTextAlignmentCenter;[self addSubview:mapLabel];
-        self.mappingSwitch=[[NSSwitch alloc]initWithFrame:NSMakeRect(w-151,29,44,24)];_mappingSwitch.controlSize=NSControlSizeSmall;_mappingSwitch.target=self;_mappingSwitch.action=@selector(mappingChanged:);_mappingSwitch.state=mappingEnabled(r[@"identity"]?:@"")?NSControlStateValueOn:NSControlStateValueOff;_mappingSwitch.enabled=supported;_mappingSwitch.accessibilityLabel=[NSString stringWithFormat:@"%@的系统电量映射",r[@"name"]?:@"设备"];[self addSubview:_mappingSwitch];
-        self.refreshButton=[NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:needsPermission?@"lock.open":@"arrow.clockwise" accessibilityDescription:needsPermission?@"授权读取":@"刷新此设备"] target:self action:@selector(performDeviceAction:)];_refreshButton.frame=NSMakeRect(w-90,33,30,28);_refreshButton.bezelStyle=NSBezelStyleRounded;_refreshButton.enabled=connected&&(supported||needsPermission);_refreshButton.toolTip=needsPermission?@"授权读取此设备电量":@"刷新此设备电量";_refreshButton.accessibilityIdentifier=@"DeviceRefresh";[self addSubview:_refreshButton];
-        self.moreButton=[NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"ellipsis" accessibilityDescription:@"更多设备操作"] target:self action:@selector(showActions:)];_moreButton.frame=NSMakeRect(w-50,33,30,28);_moreButton.bezelStyle=NSBezelStyleRounded;_moreButton.toolTip=@"更多设备操作";_moreButton.accessibilityIdentifier=@"DeviceActions";[self addSubview:_moreButton];
+        NSTextField*battery=cardLabel(percent,NSMakeRect(w-286,48,80,26),[NSFont monospacedDigitSystemFontOfSize:20 weight:NSFontWeightRegular],connected?NSColor.labelColor:NSColor.secondaryLabelColor);battery.alignment=NSTextAlignmentRight;[self addSubview:battery];
+        NSTextField*charge=cardLabel(BBChargeStatus(r),NSMakeRect(w-306,27,100,16),[NSFont systemFontOfSize:10],connected&&fresh&&[r[@"charging"] boolValue]?NSColor.systemGreenColor:NSColor.secondaryLabelColor);charge.alignment=NSTextAlignmentRight;charge.accessibilityIdentifier=@"DeviceChargingStatus";[self addSubview:charge];
+        NSTextField*mapLabel=cardLabel(@"电量映射到mac系统",NSMakeRect(w-190,60,134,15),[NSFont systemFontOfSize:10],NSColor.secondaryLabelColor);mapLabel.alignment=NSTextAlignmentCenter;[self addSubview:mapLabel];
+        self.mappingSwitch=[[NSSwitch alloc]initWithFrame:NSMakeRect(w-144,29,44,24)];_mappingSwitch.controlSize=NSControlSizeSmall;_mappingSwitch.target=self;_mappingSwitch.action=@selector(mappingChanged:);_mappingSwitch.state=mappingEnabled(r[@"identity"]?:@"")?NSControlStateValueOn:NSControlStateValueOff;_mappingSwitch.enabled=supported;_mappingSwitch.accessibilityLabel=[NSString stringWithFormat:@"%@的电量映射到mac系统",r[@"name"]?:@"设备"];[self addSubview:_mappingSwitch];
+        self.refreshButton=[NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:needsPermission?@"lock.open":@"arrow.clockwise" accessibilityDescription:needsPermission?@"授权读取":@"刷新此设备"] target:self action:@selector(performDeviceAction:)];_refreshButton.frame=NSMakeRect(w-50,33,30,28);_refreshButton.bezelStyle=NSBezelStyleRounded;_refreshButton.enabled=connected&&(supported||needsPermission);_refreshButton.toolTip=needsPermission?@"授权读取此设备电量":@"刷新此设备电量";_refreshButton.accessibilityIdentifier=@"DeviceRefresh";[self addSubview:_refreshButton];
         self.toolTip=r[@"status"];
     }return self;
 }
 - (void)performDeviceAction:(id)sender {
-    NSMenu*menu=[self deviceMenu];
-    for(NSMenuItem*item in menu.itemArray)if(item.action==([_record[@"status"] containsString:@"访问被拒绝"]?@selector(permission:):@selector(refreshDevice:))&&item.enabled){[NSApp sendAction:item.action to:item.target from:item];break;}
+    if(!_refreshButton.enabled)return;
+    if([_record[@"status"] containsString:@"访问被拒绝"]){[_menuTarget permission:sender];return;}
+    NSMenuItem*item=[NSMenuItem new];item.representedObject=_record[@"identity"];
+    [_menuTarget refreshDevice:item];
 }
-- (void)showActions:(NSButton*)sender {[[self deviceMenu] popUpMenuPositioningItem:nil atLocation:NSMakePoint(0,sender.bounds.size.height+4) inView:sender];}
 - (void)mappingChanged:(NSSwitch*)sender {
     NSMenuItem*item=[NSMenuItem new];item.representedObject=@{@"identity":_record[@"identity"]?:@"",@"enabled":@(sender.state==NSControlStateValueOn)};
     [_menuTarget setDeviceMapping:item];
-}
-- (NSMenuItem*)deviceItem:(NSString*)title action:(SEL)action value:(id)value enabled:(BOOL)enabled {
-    NSMenuItem*i=[[NSMenuItem alloc]initWithTitle:title action:action keyEquivalent:@""];i.target=_menuTarget;i.representedObject=value;i.enabled=enabled;return i;
-}
-- (NSMenu*)deviceMenu {
-    NSDictionary*r=_record;NSString*identity=r[@"identity"];BOOL supported=[r[@"selectable"] boolValue]&&identity.length;
-    NSMenu*m=[[NSMenu alloc]initWithTitle:r[@"name"]?:@"设备"];m.autoenablesItems=NO;
-    [m addItem:[self deviceItem:r[@"name"]?:@"设备" action:NULL value:nil enabled:NO]];[m addItem:NSMenuItem.separatorItem];
-    BOOL mapped=supported&&mappingEnabled(identity);
-    NSMenuItem*map=[self deviceItem:[NSString stringWithFormat:@"映射系统电量：%@",mapped?@"开启":@"关闭"] action:NULL value:nil enabled:supported];
-    NSMenu*options=[[NSMenu alloc]initWithTitle:@"映射系统电量"];options.autoenablesItems=NO;
-    for(NSNumber*on in @[@YES,@NO]){NSDictionary*value=@{@"identity":identity?:@"",@"enabled":on};NSMenuItem*i=[self deviceItem:on.boolValue?@"开启":@"关闭" action:@selector(setDeviceMapping:) value:value enabled:supported];i.state=on.boolValue==mapped?NSControlStateValueOn:NSControlStateValueOff;[options addItem:i];}
-    map.submenu=options;[m addItem:map];
-    [m addItem:[self deviceItem:@"刷新此设备电量" action:@selector(refreshDevice:) value:identity enabled:supported&&[r[@"connected"] boolValue]]];
-    NSString*physical=r[@"physical"]?:@"";BOOL official=[physical hasPrefix:@"046d:"]||[physical hasPrefix:@"3837:"]||[physical hasPrefix:@"a8a5:2255:"];
-    [m addItem:[self deviceItem:@"打开官方驱动…" action:@selector(openOfficialDriver:) value:r enabled:official]];
-    if([r[@"connected"] boolValue]&&[r[@"status"] containsString:@"访问被拒绝"])[m addItem:[self deviceItem:@"授权读取电量…" action:@selector(permission:) value:nil enabled:YES]];
-    if(identity.length&&![r[@"connected"] boolValue]){[m addItem:NSMenuItem.separatorItem];[m addItem:[self deviceItem:@"删除设备" action:@selector(deleteDevice:) value:identity enabled:YES]];}
-    [m addItem:NSMenuItem.separatorItem];[m addItem:[self deviceItem:@"设备信息…" action:@selector(showDeviceInfo:) value:r enabled:YES]];return m;
-}
-- (NSMenu*)menuForEvent:(NSEvent*)event {return [self deviceMenu];}
-- (void)rightMouseDown:(NSEvent*)event {[NSMenu popUpContextMenu:[self deviceMenu] withEvent:event forView:self];}
-- (void)mouseDown:(NSEvent*)event {if(event.modifierFlags&NSEventModifierFlagControl)[self rightMouseDown:event];else[super mouseDown:event];}
-- (NSView*)hitTest:(NSPoint)point {
-    NSView*hit=[super hitTest:point];NSEvent*event=NSApp.currentEvent;
-    if(hit&&(event.type==NSEventTypeRightMouseDown||(event.type==NSEventTypeLeftMouseDown&&(event.modifierFlags&NSEventModifierFlagControl))))return self;return hit;
 }
 - (void)drawRect:(NSRect)dirty {
     if(_showsSeparator){[BBGroupedColor(YES) setFill];NSRectFill(NSMakeRect(72,0,MAX(0,self.bounds.size.width-88),0.5));}
@@ -584,34 +558,8 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
     NSMenuItem*i=[[NSMenuItem alloc]initWithTitle:title action:action keyEquivalent:@""];i.target=self;i.representedObject=value;i.enabled=action!=NULL;return i;
 }
 - (void)menuNeedsUpdate:(NSMenu*)menu {
-    if(menu!=_statusMenu)return;[menu removeAllItems];NSArray*rows=[_engine status];
-    [menu addItem:[self menuItem:BBApplicationTitle() action:NULL value:nil]];
-    NSUInteger published=0;for(NSDictionary*r in rows)published+=[r[@"published"] boolValue];
-    NSString*summary=[NSString stringWithFormat:@"已映射 %lu 台 · 每%@上报",(unsigned long)published,BBIntervalLabel(BBInterval([BBPreferences() objectForKey:@"ReportInterval"]))];
-    [menu addItem:[self menuItem:summary action:NULL value:nil]];[menu addItem:NSMenuItem.separatorItem];
+    if(menu!=_statusMenu)return;[menu removeAllItems];
     [menu addItem:[self menuItem:@"显示主界面" action:@selector(showSettings:) value:nil]];
-    NSMenuItem*devices=[self menuItem:@"映射设备" action:NULL value:nil];devices.enabled=YES;NSMenu*sub=[[NSMenu alloc]initWithTitle:@"映射设备"];sub.autoenablesItems=NO;
-    if(rows.count==0)[sub addItem:[self menuItem:@"正在识别设备…" action:NULL value:nil]];
-    for(NSDictionary*r in rows){
-        BOOL selectable=[r[@"selectable"] boolValue];NSString*name=r[@"name"];
-        if(r[@"percent"]&&[r[@"fresh"] boolValue])name=[name stringByAppendingFormat:@" · %@%%",r[@"percent"]];
-        NSMenuItem*i=[self menuItem:name action:selectable?@selector(toggleMapping:):NULL value:r[@"identity"]];i.state=[r[@"mapped"] boolValue]?NSControlStateValueOn:NSControlStateValueOff;
-        NSString*symbol=[r[@"category"] isEqual:@"Keyboard"]?@"keyboard":([r[@"category"] isEqual:@"Mouse"]?@"computermouse":@"cable.connector");i.image=[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil];i.image.template=YES;[sub addItem:i];
-    }
-    devices.submenu=sub;[menu addItem:devices];
-    NSMenuItem*period=[self menuItem:@"上报周期" action:NULL value:nil];period.enabled=YES;NSMenu*intervals=[[NSMenu alloc]initWithTitle:@"上报周期"];intervals.autoenablesItems=NO;
-    NSTimeInterval selected=BBInterval([BBPreferences() objectForKey:@"ReportInterval"]);
-    for(NSNumber*n in @[@1800,@3600,@7200,@10800]){NSMenuItem*i=[self menuItem:BBIntervalLabel(n.doubleValue) action:@selector(changeInterval:) value:n];i.state=n.doubleValue==selected?NSControlStateValueOn:NSControlStateValueOff;[intervals addItem:i];}
-    period.submenu=intervals;[menu addItem:period];
-    SMAppServiceStatus state=BBTestingUI?([BBPreferences() boolForKey:@"AutoStartEnabled"]?SMAppServiceStatusEnabled:SMAppServiceStatusNotRegistered):SMAppService.mainAppService.status;
-    BOOL wanted=state==SMAppServiceStatusEnabled||state==SMAppServiceStatusRequiresApproval;
-    NSMenuItem*autoStart=[self menuItem:@"开机自启" action:NULL value:nil];autoStart.enabled=YES;
-    NSMenu*startOptions=[[NSMenu alloc]initWithTitle:@"开机自启"];startOptions.autoenablesItems=NO;
-    NSMenuItem*on=[self menuItem:@"开启" action:@selector(setAutoStart:) value:@YES];on.state=wanted?NSControlStateValueOn:NSControlStateValueOff;[startOptions addItem:on];
-    NSMenuItem*off=[self menuItem:@"关闭" action:@selector(setAutoStart:) value:@NO];off.state=wanted?NSControlStateValueOff:NSControlStateValueOn;[startOptions addItem:off];
-    if(state==SMAppServiceStatusRequiresApproval){[startOptions addItem:NSMenuItem.separatorItem];[startOptions addItem:[self menuItem:@"前往系统批准…" action:@selector(login:) value:nil]];}
-    autoStart.submenu=startOptions;[menu addItem:autoStart];
-    [menu addItem:NSMenuItem.separatorItem];
     NSMenuItem*quit=[self menuItem:@"退出 BatteryBridge" action:@selector(quit:) value:nil];quit.keyEquivalent=@"q";[menu addItem:quit];
 }
 - (void)toggleMapping:(NSMenuItem*)sender {
@@ -657,7 +605,7 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
     if(!_window){
         self.window=[[NSWindow alloc]initWithContentRect:NSMakeRect(0,0,720,520) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];_window.releasedWhenClosed=NO;_window.title=BBApplicationTitle();_window.backgroundColor=NSColor.windowBackgroundColor;[_window center];NSView*v=_window.contentView;
         _window.contentMinSize=NSMakeSize(560,420);_window.delegate=self;
-        NSTextField*title=cardLabel(@"设备电量",NSMakeRect(24,462,200,30),[NSFont systemFontOfSize:22 weight:NSFontWeightSemibold],NSColor.labelColor);title.autoresizingMask=NSViewMinYMargin;[v addSubview:title];
+        NSTextField*title=cardLabel(@"设备列表",NSMakeRect(24,462,200,30),[NSFont systemFontOfSize:22 weight:NSFontWeightSemibold],NSColor.labelColor);title.autoresizingMask=NSViewMinYMargin;[v addSubview:title];
         NSTextField*devices=cardLabel(@"设备",NSMakeRect(26,428,180,20),[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSColor.labelColor);devices.autoresizingMask=NSViewMinYMargin;[v addSubview:devices];
         NSButton*refresh=button(@"刷新全部",self,@selector(rescan:),NSMakeRect(594,460,102,32));refresh.image=[NSImage imageWithSystemSymbolName:@"arrow.clockwise" accessibilityDescription:@"刷新全部设备"];refresh.imagePosition=NSImageLeading;refresh.bezelStyle=NSBezelStyleRounded;refresh.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;[v addSubview:refresh];
         self.authorizeButton=button(@"授权读取…",self,@selector(permission:),NSMakeRect(584,424,112,28));_authorizeButton.hidden=YES;_authorizeButton.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;[v addSubview:_authorizeButton];

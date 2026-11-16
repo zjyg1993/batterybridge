@@ -38,27 +38,23 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     NSTimeInterval now=NSDate.date.timeIntervalSince1970;
     NSArray*fixtures=@[@{@"name":@"G304 X LIGHTSPEED",@"identity":@"test.mouse",@"category":@"Mouse",@"connected":@YES,@"fresh":@YES,@"percent":@94,@"charging":@NO,@"full":@NO,@"updated":@(now),@"mapped":@YES,@"published":@YES,@"status":@"已映射到系统电量",@"selectable":@YES},@{@"name":@"MCHOSE K87 V3",@"identity":@"test.keyboard",@"category":@"Keyboard",@"connected":@YES,@"fresh":@YES,@"percent":@92,@"charging":@NO,@"full":@NO,@"updated":@(now),@"mapped":@YES,@"published":@YES,@"status":@"已映射到系统电量",@"selectable":@YES}];
     BBApp*app=[BBApp new];app.engine=[BBEngine new];app.engine.snapshot=fixtures;app.statusMenu=[NSMenu new];app.statusMenu.autoenablesItems=NO;[app menuNeedsUpdate:app.statusMenu];
-    NSMenuItem*device=nil,*period=nil,*startup=nil;
-    for(NSMenuItem*i in app.statusMenu.itemArray){if([i.title isEqual:@"映射设备"])device=i;if([i.title isEqual:@"上报周期"])period=i;if([i.title isEqual:@"开机自启"])startup=i;}
-    ensure([[app.statusMenu itemAtIndex:0].title containsString:Version],"menu header exposes the running version");
-    ensure(device.submenu.numberOfItems==2,"device submenu contains only device entries, no status explanations");
-    ensure(period.submenu.numberOfItems==4,"four reporting intervals");ensure(startup.submenu.numberOfItems==2,"startup uses on/off submenu");
-    ensure([startup.title isEqual:@"开机自启"]&&[startup.submenu itemAtIndex:0].state==NSControlStateValueOn,"startup enabled state is explicit");
-    [app setAutoStart:[startup.submenu itemAtIndex:1]];[app menuNeedsUpdate:app.statusMenu];for(NSMenuItem*i in app.statusMenu.itemArray)if([i.title isEqual:@"开机自启"])startup=i;
-    ensure([startup.title isEqual:@"开机自启"]&&[startup.submenu itemAtIndex:1].state==NSControlStateValueOn,"startup disabled state is explicit");
+    ensure(app.statusMenu.numberOfItems==2,"status menu has exactly two commands");
+    ensure([[app.statusMenu itemAtIndex:0].title isEqual:@"显示主界面"]&&[app.statusMenu itemAtIndex:0].action==@selector(showSettings:),"first command opens main window");
+    ensure([[app.statusMenu itemAtIndex:1].title isEqual:@"退出 BatteryBridge"]&&[app.statusMenu itemAtIndex:1].action==@selector(quit:)&&[[app.statusMenu itemAtIndex:1].keyEquivalent isEqual:@"q"],"second command quits with keyboard shortcut");
     NSMenuItem*three=[NSMenuItem new];three.representedObject=@10800;[app changeInterval:three];ensure(BBInterval([BBPreferences() objectForKey:@"ReportInterval"])==10800,"interval menu saves three hours");
     NSMenuItem*mapping=[NSMenuItem new];mapping.representedObject=@"test.mouse";[app toggleMapping:mapping];ensure(mappingEnabled(@"test.mouse"),"mapping can be enabled");[app toggleMapping:mapping];ensure(!mappingEnabled(@"test.mouse"),"mapping can be disabled");
     ensure(![app applicationShouldTerminateAfterLastWindowClosed:NSApp],"closing window does not terminate app");
-    NSInteger show=-1,mapPosition=-1;BOOL removed=YES;
-    for(NSInteger i=0;i<app.statusMenu.numberOfItems;i++){NSString*title=[app.statusMenu itemAtIndex:i].title;if([title isEqual:@"显示主界面"])show=i;if([title isEqual:@"映射设备"])mapPosition=i;if([@[@"立即刷新电量",@"设备电量…",@"输入监控设置…",@"停用并卸载…"] containsObject:title])removed=NO;}
-    ensure(show>=0&&show<mapPosition,"show main window is above mapping devices");ensure(removed,"redundant status menu commands removed");
-    BBDeviceRow*card=[[BBDeviceRow alloc]initWithFrame:NSMakeRect(0,0,640,96) record:fixtures[0]];card.menuTarget=app;NSMenu*context=[card deviceMenu];NSMenuItem*mapCard=[context itemAtIndex:2];
-    ensure(mapCard.submenu.numberOfItems==2,"card mapping has explicit on and off choices");
-    [app setDeviceMapping:[mapCard.submenu itemAtIndex:0]];ensure(mappingEnabled(@"test.mouse")&&!mappingEnabled(@"test.keyboard"),"card mapping changes only that device");
-    context=[card deviceMenu];ensure([[context itemAtIndex:2].title hasSuffix:@"开启"],"context menu reads current mapping rather than stale card snapshot");
-    [app setDeviceMapping:[[context itemAtIndex:2].submenu itemAtIndex:1]];ensure(!mappingEnabled(@"test.mouse"),"card mapping can be disabled");
-    app.engine.forcePoll=NO;[app refreshDevice:[context itemAtIndex:3]];ensure([app.engine.refreshTargets containsObject:@"test.mouse"]&&app.engine.refreshTargets.count==1&&!app.engine.forcePoll,"single device refresh does not request a global poll");
-    BBDeviceRow*unknown=[[BBDeviceRow alloc]initWithFrame:NSMakeRect(0,0,640,96) record:@{@"name":@"Unknown",@"connected":@YES,@"selectable":@NO}];unknown.menuTarget=app;NSMenu*limited=[unknown deviceMenu];ensure(![limited itemAtIndex:2].enabled&&![limited itemAtIndex:3].enabled,"unsupported device cannot map or query");
+    BBDeviceRow*card=[[BBDeviceRow alloc]initWithFrame:NSMakeRect(0,0,640,96) record:fixtures[0]];card.menuTarget=app;
+    NSEvent*rightClick=[NSEvent mouseEventWithType:NSEventTypeRightMouseDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil eventNumber:0 clickCount:1 pressure:1];
+    ensure([card menuForEvent:rightClick]==nil,"device row has no context menu");
+    BOOL hasMappingLabel=NO;
+    for(NSView*v in card.subviews){
+        ensure(![v.accessibilityIdentifier isEqual:@"DeviceActions"],"device row has no more-actions button");
+        if([v isKindOfClass:NSTextField.class]&&[[(NSTextField*)v stringValue] isEqual:@"电量映射到mac系统"])hasMappingLabel=YES;
+    }
+    ensure(hasMappingLabel,"mapping label uses requested wording");
+    app.engine.forcePoll=NO;
+    BBDeviceRow*unknown=[[BBDeviceRow alloc]initWithFrame:NSMakeRect(0,0,640,96) record:@{@"name":@"Unknown",@"connected":@YES,@"selectable":@NO}];unknown.menuTarget=app;
     [card performDeviceAction:card.refreshButton];
     ensure([app.engine.refreshTargets containsObject:@"test.mouse"]&&app.engine.refreshTargets.count==1,"row refresh button targets its own device");
     ensure(!unknown.refreshButton.enabled,"unsupported row disables refresh");
@@ -67,10 +63,8 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     card.mappingSwitch.state=NSControlStateValueOff;[card mappingChanged:card.mappingSwitch];ensure(!mappingEnabled(@"test.mouse"),"card switch disables mapping");
     NSMutableDictionary*offline=[fixtures[0] mutableCopy];offline[@"connected"]=@NO;offline[@"physical"]=@"test.receiver";
     BBDeviceRow*offlineCard=[[BBDeviceRow alloc]initWithFrame:NSMakeRect(0,0,640,96) record:offline];offlineCard.menuTarget=app;
-    ensure(!offlineCard.refreshButton.enabled&&offlineCard.moreButton.enabled,"offline row retains actions and disables refresh");
-    NSMenuItem*delete=nil;for(NSMenuItem*i in offlineCard.deviceMenu.itemArray)if(i.action==@selector(deleteDevice:))delete=i;
-    ensure(delete.enabled,"disconnected device offers deletion");
-    for(NSMenuItem*i in card.deviceMenu.itemArray)ensure(i.action!=@selector(deleteDevice:),"connected device cannot be deleted");
+    ensure(!offlineCard.refreshButton.enabled&&[offlineCard menuForEvent:rightClick]==nil,"offline row disables refresh and has no context menu");
+    NSMenuItem*delete=[NSMenuItem new];delete.representedObject=@"test.mouse";
     app.engine.known[@"test.mouse"]=offline;app.engine.samples[@"test.mouse"]=@{@"updated":@(now)};
     app.engine.snapshot=@[offline];[app deleteDevice:delete];[app.engine applyDeletions:[NSSet setWithObject:@"test.receiver"]];
     ensure(app.engine.known[@"test.mouse"]!=nil,"reconnected device is protected from queued deletion");
@@ -79,6 +73,8 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     app.engine.snapshot=fixtures;
     NSImage*brand=BBStatusIcon();ensure(brand.isTemplate&&brand.size.width==20,"brand menu bar icon is a monochrome system template");
     [app buildWindow];
+    BOOL hasListTitle=NO;for(NSView*v in app.window.contentView.subviews)if([v isKindOfClass:NSTextField.class]&&[[(NSTextField*)v stringValue] isEqual:@"设备列表"])hasListTitle=YES;
+    ensure(hasListTitle,"main window title uses device list wording");
     ensure(app.intervalPicker.numberOfItems==4,"main window offers four update intervals");
     [app.intervalPicker selectItemAtIndex:0];app.engine.forcePoll=NO;[app pickInterval:app.intervalPicker];
     ensure(BBInterval([BBPreferences() objectForKey:@"ReportInterval"])==1800&&app.engine.forcePoll,"interval change immediately requests a fresh reading");
@@ -112,8 +108,7 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     app.engine.snapshot=@[fixtures[1],deniedMouse];app.devicesSignature=nil;[app refresh];
     ensure(!app.authorizeButton.hidden,"a readable keyboard must not hide the mouse permission action");
     BBDeviceRow*deniedCard=[[BBDeviceRow alloc]initWithFrame:NSMakeRect(0,0,640,96) record:deniedMouse];deniedCard.menuTarget=app;
-    BOOL hasPermission=NO;for(NSMenuItem*i in deniedCard.deviceMenu.itemArray)hasPermission=hasPermission||i.action==@selector(permission:);
-    ensure(hasPermission,"denied device has its own authorization action");
+    ensure(deniedCard.refreshButton.enabled&&[deniedCard.refreshButton.toolTip isEqual:@"授权读取此设备电量"],"denied device retains its direct authorization button");
     // Exercise the device-response -> macOS publication path, not just labels.
     uint8_t chargingFrame[]={0xf0,0x30,0xa5,0x95,0x2e,1,1,1,78,1};
     NSDictionary*reading=BBYJXDecode([NSData dataWithBytes:chargingFrame length:sizeof chargingFrame],0xf0);
