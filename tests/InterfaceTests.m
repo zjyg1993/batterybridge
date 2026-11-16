@@ -3,6 +3,32 @@
 #import "../Sources/main.m"
 #undef main
 static void ensure(BOOL ok,const char*message){if(!ok){fprintf(stderr,"FAIL: %s\n",message);exit(1);}}
+@interface BBFakeCompxChannel:BBChannel
+@property BOOL online;
+@property NSMutableArray*commands;
+@end
+@implementation BBFakeCompxChannel
+- (NSDictionary*)exchange:(uint8_t)rid payload:(NSData*)data matching:(BOOL(^)(NSDictionary*))match {
+    if(!_commands)_commands=[NSMutableArray new];const uint8_t*p=data.bytes;[_commands addObject:@(p[0])];
+    uint8_t r[17]={8,p[0],0,0,0,p[0]==3?1:2,p[0]==3?_online:53,0};
+    r[16]=0x55;for(int i=0;i<16;i++)r[16]-=r[i];NSDictionary*f=@{@"id":@(rid),@"data":[NSData dataWithBytes:r length:17]};
+    return match(f)?f:nil;
+}
+@end
+@interface BBPermissionDisplayController:BBDisplayController
+@property BOOL trusted;
+@property BOOL activeTap;
+@property BOOL listenGranted;
+@property NSMutableArray *requests;
+@end
+@implementation BBPermissionDisplayController
+- (BOOL)accessibilityAuthorized {return _trusted;}
+- (BOOL)hasActiveMediaKeyTap {return _activeTap;}
+- (BOOL)inputMonitoringAuthorized {return _listenGranted;}
+- (void)setPercent:(double)percent code:(uint8_t)code identity:(NSString*)identity {
+    if(!_requests)_requests=[NSMutableArray new];[_requests addObject:@{@"percent":@(percent),@"code":@(code),@"identity":identity}];
+}
+@end
 int main(int argc,const char*argv[]){@autoreleasepool{
     BBTestingUI=YES;[NSApplication sharedApplication];[BBPreferences() registerDefaults:@{@"ReportInterval":@3600,@"AutoStartEnabled":@YES}];
     // A USB mouse/keyboard usage alone must never qualify as a 2.4G receiver.
@@ -35,12 +61,103 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     hid[@"VendorID"]=@0x088d;hid[@"ProductID"]=@0x062e;ensure(receiverKind(hid)==BBReceiverNone,"SC580 wired device excluded");
     hid[@"VendorID"]=@0x089d;hid[@"ProductID"]=@0x062f;[hid removeObjectForKey:@"ReportDescriptor"];
     ensure(receiverKind(hid)==BBReceiverNone,"SC580 missing feature report excluded");
+    // Receiver-only allowlists and actual USB interface numbers are required.
+    hid=[@{@"Transport":@"USB",@"VendorID":@0x1532,@"ProductID":@0x0296,@"USBInterfaceNumber":@2} mutableCopy];
+    ensure(receiverKind(hid)==BBReceiverRazer,"Razer TKL receiver control interface accepted without name guessing");
+    ensure([receiverProfile(hid)[@"category"] isEqual:@"Keyboard"],"Razer receiver classified as keyboard");
+    hid[@"USBInterfaceNumber"]=@0;ensure(receiverKind(hid)==BBReceiverNone,"Razer keyboard normal input interface excluded");
+    hid[@"USBInterfaceNumber"]=@2;hid[@"ProductID"]=@0x0298;ensure(receiverKind(hid)==BBReceiverNone,"Razer TKL wired ID excluded");
+    NSArray*razerReceivers=@[@0x025c,@0x0271,@0x02ba,@0x02d5,@0x0290,@0x0296,@0x00a6,@0x00c1,@0x00b7,@0x00c5,@0x00bf];
+    for(NSNumber*pid in razerReceivers){
+        hid[@"ProductID"]=pid;hid[@"USBInterfaceNumber"]=(pid.intValue<0x0100)?@0:((pid.intValue==0x0271||pid.intValue==0x02ba)?@3:@2);
+        ensure(receiverKind(hid)==BBReceiverRazer,"documented Razer receiver accepted");
+        hid[@"Transport"]=@"Bluetooth";ensure(receiverKind(hid)==BBReceiverNone,"Razer Bluetooth excluded");hid[@"Transport"]=@"USB";
+    }
+    for(NSNumber*pid in @[@0x00a5,@0x00c0,@0x00b6,@0x00c4,@0x00be]){
+        hid[@"ProductID"]=pid;hid[@"USBInterfaceNumber"]=@0;ensure(receiverKind(hid)==BBReceiverNone,"Razer mouse cable ID excluded");
+    }
+    hid[@"ProductID"]=@0x00bf;
+    [hid removeObjectForKey:@"USBInterfaceNumber"];ensure(receiverKind(hid)==BBReceiverNone,"Razer missing USB interface refused");
+    uint8_t kcDescriptor[]={0x85,0xb3,0x75,8,0x95,63,0x91,2,0x85,0xb4,0x81,2};
+    hid[@"VendorID"]=@0x3434;hid[@"ProductID"]=@0xd028;hid[@"USBInterfaceNumber"]=@4;hid[@"PrimaryUsagePage"]=@0xffc1;
+    hid[@"ReportDescriptor"]=[NSData dataWithBytes:kcDescriptor length:sizeof kcDescriptor];
+    ensure(receiverKind(hid)==BBReceiverKeychron,"Keychron receiver vendor output/input accepted");
+    hid[@"USBInterfaceNumber"]=@0;ensure(receiverKind(hid)==BBReceiverNone,"Keychron mouse input interface excluded");hid[@"USBInterfaceNumber"]=@4;
+    hid[@"ProductID"]=@0xd048;ensure(receiverKind(hid)==BBReceiverNone,"Keychron cable ID excluded");
+    uint8_t glDescriptor[]={0x75,8,0x95,64,0xb1,2};
+    hid[@"VendorID"]=@0x258a;hid[@"ProductID"]=@0x2022;hid[@"PrimaryUsagePage"]=@0xffa0;
+    hid[@"ReportDescriptor"]=[NSData dataWithBytes:glDescriptor length:sizeof glDescriptor];
+    ensure(receiverKind(hid)==BBReceiverGlorious,"Glorious receiver exact feature length accepted");
+    hid[@"PrimaryUsagePage"]=@1;ensure(receiverKind(hid)==BBReceiverNone,"Glorious regular input collection excluded");hid[@"PrimaryUsagePage"]=@0xffff;
+    hid[@"ProductID"]=@0x2011;ensure(receiverKind(hid)==BBReceiverNone,"Glorious wired ID excluded");
+    uint8_t ssDescriptor[]={0x75,8,0x95,64,0x91,2};
+    hid[@"VendorID"]=@0x1038;hid[@"PrimaryUsagePage"]=@0xffc0;hid[@"ReportDescriptor"]=[NSData dataWithBytes:ssDescriptor length:sizeof ssDescriptor];
+    for(NSNumber*pid in @[@0x1838,@0x1878,@0x1852,@0x185c,@0x1860,@0x1858,@0x1874]){
+        hid[@"ProductID"]=pid;ensure(receiverKind(hid)==BBReceiverSteelSeries,"documented Aerox receiver accepted");
+    }
+    for(NSNumber*pid in @[@0x183a,@0x187a,@0x1854,@0x185e,@0x1862,@0x185a,@0x1876,@0x1890]){
+        hid[@"ProductID"]=pid;ensure(receiverKind(hid)==BBReceiverNone,"Aerox cable or unadapted generation excluded");
+    }
+    hid[@"ProductID"]=@0x1838;[hid removeObjectForKey:@"ReportDescriptor"];ensure(receiverKind(hid)==BBReceiverNone,"Aerox unknown report layout refused");
+    BBChannel*inputChannel=[BBChannel new];inputChannel.frames=[NSMutableArray new];inputChannel.allowedInputReports=[NSSet setWithObject:@0xb4];
+    uint8_t inputBytes[64]={0};
+    reportCallback((__bridge void*)inputChannel,0,NULL,kIOHIDReportTypeInput,0,inputBytes,64);
+    ensure(inputChannel.frames.count==0,"ordinary unnumbered input discarded on Keychron channel");
+    reportCallback((__bridge void*)inputChannel,0,NULL,kIOHIDReportTypeInput,0xb4,inputBytes,64);
+    ensure(inputChannel.frames.count==1,"Keychron vendor reply routed to its channel");
+    inputChannel.allowedInputReports=[NSSet set];
+    reportCallback((__bridge void*)inputChannel,0,NULL,kIOHIDReportTypeInput,0xb4,inputBytes,64);
+    ensure(inputChannel.frames.count==1,"feature-only Razer and Glorious channels retain no input reports");
+    // Current receivers remain distinct from cable IDs and unrelated USB inputs.
+    hid=[@{@"Transport":@"USB",@"VendorID":@0x1532,@"ProductID":@0x00e6,@"USBInterfaceNumber":@0} mutableCopy];
+    ensure([receiverProfile(hid)[@"name"] isEqual:@"Razer Viper V4 Pro"],"Viper V4 Pro 2026 receiver supported");
+    hid[@"ProductID"]=@0x00e5;ensure(receiverKind(hid)==BBReceiverNone,"Viper V4 cable excluded");
+    hid[@"ProductID"]=@0x00f0;ensure(receiverKind(hid)==BBReceiverRazer,"DeathAdder V4 Carbon Fiber receiver accepted");
+    uint8_t compxDescriptor[]={0x85,8,0x75,8,0x95,16,0x91,2,0x81,2};
+    hid[@"PrimaryUsagePage"]=@0xff02;hid[@"PrimaryUsage"]=@2;hid[@"ReportDescriptor"]=[NSData dataWithBytes:compxDescriptor length:sizeof compxDescriptor];
+    for(NSArray*ids in @[@[@0x3554,@0xf508],@[@0x3554,@0xf509],@[@0x3554,@0xf58a],@[@0x3554,@0xf505],@[@0x3554,@0xf523],@[@0x373b,@0x1085],@[@0x373b,@0x101a],@[@0x373b,@0x101b],@[@0x3710,@0x5406],@[@0x1b1c,@0x2b2a],@[@0x3770,@0x0200]]){
+        hid[@"VendorID"]=ids[0];hid[@"ProductID"]=ids[1];ensure(receiverKind(hid)==BBReceiverCompx,"documented Compx RF receiver accepted");
+        hid[@"Transport"]=@"Bluetooth";ensure(receiverKind(hid)==BBReceiverNone,"Compx Bluetooth excluded");hid[@"Transport"]=@"USB";
+    }
+    hid[@"VendorID"]=@0x3554;hid[@"ProductID"]=@0xf58c;ensure(receiverKind(hid)==BBReceiverNone,"VXE R1 Pro Max wired ID excluded");
+    hid[@"ProductID"]=@0xf58a;hid[@"PrimaryUsage"]=@1;ensure(receiverKind(hid)==BBReceiverNone,"Compx wrong collection excluded");
+    uint8_t mchoseDescriptor[]={0x85,0x11,0x75,8,0x95,20,0xb1,2};
+    hid[@"VendorID"]=@0x3837;hid[@"ProductID"]=@0x100b;hid[@"PrimaryUsagePage"]=@0xff01;hid[@"PrimaryUsage"]=@1;hid[@"ReportDescriptor"]=[NSData dataWithBytes:mchoseDescriptor length:sizeof mchoseDescriptor];
+    ensure(receiverKind(hid)==BBReceiverMchose,"MCHOSE A7 V2 Ultra feature interface accepted");
+    hid[@"PrimaryUsagePage"]=@0xff0b;ensure(receiverKind(hid)==BBReceiverNone,"MCHOSE nonresponding sibling collection excluded");hid[@"PrimaryUsagePage"]=@0xff01;
+    hid[@"ProductID"]=@0x4245;ensure(receiverKind(hid)==BBReceiverNone,"MCHOSE incompatible G3 family not swept in by vendor");
+    uint8_t atkDescriptor[]={0x85,4,0x75,8,0x95,31,0x91,2,0x81,2};
+    hid[@"VendorID"]=@0x320f;hid[@"ProductID"]=@0x5088;hid[@"PrimaryUsagePage"]=@0xff1c;hid[@"PrimaryUsage"]=@0x92;hid[@"Product"]=@"ATK V75X 2.4G Dongle";hid[@"ReportDescriptor"]=[NSData dataWithBytes:atkDescriptor length:sizeof atkDescriptor];
+    ensure(receiverKind(hid)==BBReceiverATKKeyboard,"ATK V75X 2026 wireless keyboard accepted");
+    hid[@"Product"]=@"Other Keyboard";ensure(receiverKind(hid)==BBReceiverNone,"shared ATK USB ID requires actual product name");
+    uint8_t omniDescriptor[]={0x85,1,0x75,8,0x95,63,0x91,2,0x81,2};
+    hid[@"VendorID"]=@0x0b05;hid[@"ProductID"]=@0x1ace;hid[@"LocationID"]=@123;hid[@"USBInterfaceNumber"]=@2;hid[@"PrimaryUsagePage"]=@0xff02;hid[@"PrimaryUsage"]=@1;hid[@"ReportDescriptor"]=[NSData dataWithBytes:omniDescriptor length:sizeof omniDescriptor];
+    ensure(receiverKind(hid)==BBReceiverASUSOmni,"ASUS OMNI pairing-control interface accepted");
+    hid[@"PrimaryUsagePage"]=@1;ensure(receiverKind(hid)==BBReceiverNone,"ASUS OMNI keyboard input excluded");
+    uint8_t superstrikeDescriptor[]={0x85,0x10,0x75,8,0x95,6,0x91,2};
+    hid[@"VendorID"]=@0x046d;hid[@"ProductID"]=@0xc54d;hid[@"PrimaryUsagePage"]=@0xff00;hid[@"PrimaryUsage"]=@1;hid[@"Product"]=@"PRO X2 SUPERSTRIKE";hid[@"ReportDescriptor"]=[NSData dataWithBytes:superstrikeDescriptor length:sizeof superstrikeDescriptor];
+    ensure(receiverKind(hid)==BBReceiverLogitech,"2026 SUPERSTRIKE receiver does not depend on receiver word in product name");
+    [hid removeObjectForKey:@"ReportDescriptor"];ensure(receiverKind(hid)==BBReceiverNone,"SUPERSTRIKE requires HID++ output descriptor");
+    BBFakeCompxChannel*compx=[BBFakeCompxChannel new];
+    ensure(BBCompxBattery(compx)==nil&&[compx.commands isEqual:@[@3]],"offline Compx receiver never queried for cached battery");
+    compx.online=YES;[compx.commands removeAllObjects];
+    ensure([BBCompxBattery(compx)[@"percent"] intValue]==53&&[compx.commands isEqual:@[@3,@4]],"online check precedes every Compx battery read");
+    uint8_t omniKeyboardDescriptor[]={0x85,2,0x75,8,0x95,63,0x91,2,0x81,2};
+    NSMutableDictionary*omniKeyboard=[@{@"Transport":@"USB",@"VendorID":@0x0b05,@"ProductID":@0x1ace,@"LocationID":@123,@"USBInterfaceNumber":@2,@"PrimaryUsagePage":@0xff00,@"PrimaryUsage":@2,@"ReportDescriptor":[NSData dataWithBytes:omniKeyboardDescriptor length:sizeof omniKeyboardDescriptor]} mutableCopy];
+    ensure(BBASUSKeyboardInterfaceMatches(omniKeyboard,@"0b05:1ace:123"),"OMNI keyboard channel resolves on same receiver");
+    ensure(!BBASUSKeyboardInterfaceMatches(omniKeyboard,@"0b05:1ace:124"),"two OMNI receivers cannot exchange paired keyboard data");
+    [omniKeyboard removeObjectForKey:@"LocationID"];ensure(!BBASUSKeyboardInterfaceMatches(omniKeyboard,@"0b05:1ace:0"),"missing location never groups unrelated OMNI devices");
     NSTimeInterval now=NSDate.date.timeIntervalSince1970;
     NSArray*fixtures=@[@{@"name":@"G304 X LIGHTSPEED",@"identity":@"test.mouse",@"category":@"Mouse",@"connected":@YES,@"fresh":@YES,@"percent":@94,@"charging":@NO,@"full":@NO,@"updated":@(now),@"mapped":@YES,@"published":@YES,@"status":@"已映射到系统电量",@"selectable":@YES},@{@"name":@"MCHOSE K87 V3",@"identity":@"test.keyboard",@"category":@"Keyboard",@"connected":@YES,@"fresh":@YES,@"percent":@92,@"charging":@NO,@"full":@NO,@"updated":@(now),@"mapped":@YES,@"published":@YES,@"status":@"已映射到系统电量",@"selectable":@YES}];
     BBApp*app=[BBApp new];app.engine=[BBEngine new];app.engine.snapshot=fixtures;app.statusMenu=[NSMenu new];app.statusMenu.autoenablesItems=NO;[app menuNeedsUpdate:app.statusMenu];
-    ensure(app.statusMenu.numberOfItems==2,"status menu has exactly two commands");
-    ensure([[app.statusMenu itemAtIndex:0].title isEqual:@"显示主界面"]&&[app.statusMenu itemAtIndex:0].action==@selector(showSettings:),"first command opens main window");
-    ensure([[app.statusMenu itemAtIndex:1].title isEqual:@"退出 BatteryBridge"]&&[app.statusMenu itemAtIndex:1].action==@selector(quit:)&&[[app.statusMenu itemAtIndex:1].keyEquivalent isEqual:@"q"],"second command quits with keyboard shortcut");
+    ensure(app.statusMenu.numberOfItems==fixtures.count+4,"status menu includes devices, section and two app commands");
+    for(NSMenuItem *item in app.statusMenu.itemArray)if([item.view isKindOfClass:BBStatusDeviceView.class]){
+        BBStatusDeviceView *view=(BBStatusDeviceView*)item.view;
+        ensure(view.sliders.count==0&&[view.stateLabel.stringValue containsString:@"%"],"wireless devices only show battery status");
+        for(NSView *control in view.subviews)ensure(![control isKindOfClass:NSSlider.class]&&![control isKindOfClass:NSButton.class],"wireless menu row has no adjustable controls");
+    }
+    ensure([[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-2].title isEqual:@"显示主界面"]&&[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-2].action==@selector(showSettings:),"first command opens main window");
+    ensure([[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].title isEqual:@"退出 DeviceBridge"]&&[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].action==@selector(quit:)&&[[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].keyEquivalent isEqual:@"q"],"second command quits with keyboard shortcut");
     NSMenuItem*three=[NSMenuItem new];three.representedObject=@10800;[app changeInterval:three];ensure(BBInterval([BBPreferences() objectForKey:@"ReportInterval"])==10800,"interval menu saves three hours");
     NSMenuItem*mapping=[NSMenuItem new];mapping.representedObject=@"test.mouse";[app toggleMapping:mapping];ensure(mappingEnabled(@"test.mouse"),"mapping can be enabled");[app toggleMapping:mapping];ensure(!mappingEnabled(@"test.mouse"),"mapping can be disabled");
     ensure(![app applicationShouldTerminateAfterLastWindowClosed:NSApp],"closing window does not terminate app");
@@ -84,6 +201,67 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     [app.window performClose:nil];[[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];ensure(!app.window.visible,"closing main window hides it");
     [app showWindow];[[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];ensure(app.window.visible,"main window can reopen after close");[app.window orderOut:nil];
     ensure([app.window.title containsString:Version],"window title exposes the running version");
+    BBPermissionDisplayController *permissionDisplays=[BBPermissionDisplayController new];app.displays=permissionDisplays;
+    NSDictionary*displayFixture=@{@"identity":@"display:test",@"category":@"Display",@"connected":@YES,@"mappingEnabled":@YES,@"updated":@(now),@"name":@"DELL S2725QS",@"brightness":@{@"percent":@55},@"volume":@{@"percent":@20},@"status":@"DDC 已读取"};
+    [app.displays setValue:@[displayFixture] forKey:@"snapshot"];app.devicesSignature=nil;[app refresh];
+    ensure(!app.authorizeButton.hidden&&[app.authorizeButton.title isEqual:@"授权快捷键…"],"ungranted media keys show authorization");
+    permissionDisplays.listenGranted=YES;[app refresh];
+    ensure(!app.authorizeButton.hidden,"listen-only permission alone never falsely grants filtering access");
+    permissionDisplays.trusted=YES;[app refresh];
+    ensure(app.authorizeButton.hidden,"granted Accessibility immediately hides shortcut authorization without a device change");
+    permissionDisplays.trusted=NO;permissionDisplays.activeTap=YES;[app refresh];
+    ensure(app.authorizeButton.hidden,"working filtering event tap hides redundant authorization");
+    permissionDisplays.activeTap=NO;[app applicationDidBecomeActive:[NSNotification notificationWithName:NSApplicationDidBecomeActiveNotification object:NSApp]];
+    ensure(!app.authorizeButton.hidden,"returning to app detects revoked permission");
+    permissionDisplays.trusted=YES;[app applicationDidBecomeActive:[NSNotification notificationWithName:NSApplicationDidBecomeActiveNotification object:NSApp]];
+    ensure(app.authorizeButton.hidden,"returning from Settings detects newly granted permission");
+    [app menuNeedsUpdate:app.statusMenu];BBStatusDeviceView *menuDisplay=nil;
+    for(NSMenuItem *item in app.statusMenu.itemArray)if([item.view isKindOfClass:BBStatusDeviceView.class]&&[[(BBStatusDeviceView*)item.view record][@"category"] isEqual:@"Display"])menuDisplay=(BBStatusDeviceView*)item.view;
+    ensure(menuDisplay&&menuDisplay.sliders.count==2,"status menu exposes brightness and volume for each display");
+    NSMutableDictionary *menuRecord=[displayFixture mutableCopy];menuRecord[@"mappingEnabled"]=@NO;[menuDisplay updateRecord:menuRecord];
+    menuDisplay.sliders[0].doubleValue=72;[menuDisplay changeLevel:menuDisplay.sliders[0]];
+    menuDisplay.sliders[1].doubleValue=28;[menuDisplay changeLevel:menuDisplay.sliders[1]];
+    ensure(permissionDisplays.requests.count==2&&[permissionDisplays.requests[0][@"code"] intValue]==0x10&&[permissionDisplays.requests[1][@"code"] intValue]==0x62&&[permissionDisplays.requests[1][@"identity"] isEqual:@"display:test"],"menu sliders send the correct VCP and identity independently of mapping");
+    menuRecord[@"volumeError"]=@"不可用";[menuDisplay updateRecord:menuRecord];[menuDisplay changeLevel:menuDisplay.sliders[1]];
+    ensure(!menuDisplay.sliders[1].enabled&&menuDisplay.sliders[0].enabled&&permissionDisplays.requests.count==2,"unavailable volume cannot be changed from menu");
+    menuRecord[@"connected"]=@NO;[menuDisplay updateRecord:menuRecord];[menuDisplay changeLevel:menuDisplay.sliders[0]];
+    ensure(!menuDisplay.sliders[0].enabled&&permissionDisplays.requests.count==2,"offline display cannot be changed from menu");
+    [app menuWillOpen:app.statusMenu];
+    ensure(menuDisplay.sliders[0].enabled&&app.statusMenuTimer!=nil,"opening menu refreshes availability and starts tracking-mode updates");
+    menuDisplay.sliders[0].dragging=YES;menuDisplay.sliders[0].doubleValue=81;
+    [app refreshStatusMenuViews];ensure(menuDisplay.sliders[0].doubleValue==81,"live refresh never moves a thumb while dragging");menuDisplay.sliders[0].dragging=NO;
+    [app.displays setValue:@[] forKey:@"snapshot"];[app refreshStatusMenuViews];
+    ensure(!menuDisplay.sliders[0].enabled&&!menuDisplay.sliders[1].enabled,"unplugging display disables open menu controls in place");
+    [app.displays setValue:@[displayFixture] forKey:@"snapshot"];[app refreshStatusMenuViews];
+    ensure(menuDisplay.sliders[0].enabled&&menuDisplay.sliders[0].doubleValue==55,"confirmed hardware reading refreshes existing menu row");
+    NSMutableDictionary *newReading=[displayFixture mutableCopy];newReading[@"volume"]=@{@"percent":@38};
+    [app.displays setValue:@[newReading] forKey:@"snapshot"];
+    NSDate *trackingDeadline=[NSDate dateWithTimeIntervalSinceNow:.4];
+    while(trackingDeadline.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runMode:NSEventTrackingRunLoopMode beforeDate:trackingDeadline];
+    ensure(menuDisplay.sliders[1].doubleValue==38,"status refresh timer fires in actual menu event-tracking mode");
+    [app.displays setValue:@[displayFixture] forKey:@"snapshot"];
+    BBStatusDeviceView *staleMenu=[[BBStatusDeviceView alloc]initWithRecord:@{@"name":@"Mouse",@"connected":@YES,@"fresh":@NO,@"percent":@99} controller:nil];
+    ensure(![staleMenu.stateLabel.stringValue containsString:@"99"],"wireless menu never presents a stale percentage as current");
+    [app menuDidClose:app.statusMenu];ensure(!app.statusMenuTimer,"closing menu releases update timer");
+    NSUInteger displayRows=0;for(NSView*v in app.devicesView.subviews)if([v isKindOfClass:BBDisplayRow.class]){
+        displayRows++;BBDisplayRow*r=(BBDisplayRow*)v;NSMenu *injected=[NSMenu new];[injected addItemWithTitle:@"删除" action:NULL keyEquivalent:@""];r.menu=injected;
+        ensure([r menuForEvent:rightClick]==nil,"display cannot be deleted through a context menu even if a menu is assigned");ensure(r.brightnessSlider.enabled&&r.volumeSlider.enabled,"display row exposes both detected controls");
+        ensure(NSMaxX(r.volumeSlider.frame)<=NSMinX(r.mappingSwitch.frame),"display controls precede mapping switch");
+        ensure(r.mappingSwitch.state==NSControlStateValueOn&&r.refreshButton.frame.origin.x==r.bounds.size.width-50,"display mapping and refresh align with wireless device rows");
+    }
+    ensure(displayRows==1,"display discovered alongside wireless receivers");
+    ensure(fabs(app.devicesView.groupHeight-(fixtures.count*96+96))<1,"mixed device row heights fit scrolling document");
+    for(NSNumber*legacy in @[@YES,@NO]){
+        app.devicesScroll.scrollerStyle=legacy.boolValue?NSScrollerStyleLegacy:NSScrollerStyleOverlay;
+        for(NSValue*size in @[[NSValue valueWithSize:NSMakeSize(560,420)],[NSValue valueWithSize:NSMakeSize(900,620)]]){
+            [app.window setContentSize:size.sizeValue];app.devicesSignature=nil;[app refresh];
+            for(NSView*row in app.devicesView.subviews){
+                ensure(row.frame.size.height==96,"display and wireless rows share the same height");
+                for(NSView*control in row.subviews)ensure(NSMinX(control.frame)>=0&&NSMaxX(control.frame)<=row.bounds.size.width,"mixed row controls fit at narrow and wide widths");
+            }
+        }
+    }
+    app.displays=nil;app.devicesSignature=nil;[app refresh];
     ensure((app.window.styleMask&NSWindowStyleMaskResizable)!=0,"window allows both dimensions to resize");
     NSMutableArray*many=[fixtures mutableCopy];for(int i=0;i<7;i++)[many addObject:fixtures[i%2]];app.engine.snapshot=many;
     for(NSNumber*legacy in @[@YES,@NO]){
@@ -126,8 +304,8 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     NSMutableDictionary*contradictory=[reading mutableCopy];contradictory[@"charging"]=@YES;
     ensure(![BBPowerDetails(@"test.yjx",@"YJX",@"Mouse",contradictory)[@"Is Charged"] boolValue],"macOS never receives charging and charged simultaneously");
     if(argc>1){
-        NSDictionary*pending=@{@"name":@"USB Receiver（YJX 鼠标）",@"identity":@"test.yjx",@"category":@"Mouse",@"connected":@NO,@"selectable":@YES,@"status":@"接收器未连接"};
-        app.engine.snapshot=[fixtures arrayByAddingObject:pending];[app.window setContentSize:NSMakeSize(660,600)];app.devicesSignature=nil;[app refresh];
+        BBPermissionDisplayController *permissionDisplays=[BBPermissionDisplayController new];app.displays=permissionDisplays;[app.displays setValue:@[displayFixture] forKey:@"snapshot"];
+        app.engine.snapshot=fixtures;[app.window setContentSize:NSMakeSize(660,600)];app.devicesSignature=nil;[app refresh];
         if(argc>2)app.window.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
         NSView*root=app.window.contentView;
         NSBitmapImageRep*rep=[[NSBitmapImageRep alloc]initWithBitmapDataPlanes:NULL pixelsWide:1320 pixelsHigh:1200 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];rep.size=NSMakeSize(660,600);

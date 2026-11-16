@@ -7,16 +7,16 @@ case "${output_dir}/" in
   *) output_dir="${output_dir}.noindex" ;;
 esac
 mkdir -p "${output_dir}"
-bundle_dir="${output_dir}/BatteryBridge.app"
+bundle_dir="${output_dir}/DeviceBridge.app"
 mkdir -p "${bundle_dir}/Contents/MacOS" "${bundle_dir}/Contents/Resources"
 clang -fobjc-arc -fblocks -O2 -Wall -Wextra -Wno-unused-parameter \
   -arch arm64 -arch x86_64 -mmacosx-version-min=13.0 \
-  -framework Cocoa -framework IOKit -framework ServiceManagement \
-  "${project_dir}/Sources/main.m" "${project_dir}/Sources/Protocol.m" "${project_dir}/Sources/Policy.m" \
-  -o "${bundle_dir}/Contents/MacOS/BatteryBridge"
+  -framework Cocoa -framework IOKit -framework ServiceManagement -framework CoreAudio -framework ApplicationServices \
+  "${project_dir}/Sources/main.m" "${project_dir}/Sources/Protocol.m" "${project_dir}/Sources/Policy.m" "${project_dir}/Sources/Display.m" "${project_dir}/Sources/DisplayDDC.m" \
+  -o "${bundle_dir}/Contents/MacOS/DeviceBridge"
 python3 - "${bundle_dir}/Contents/Info.plist" <<'PY'
 import plistlib,sys
-p={'CFBundleIdentifier':'local.batterybridge.agent','CFBundleName':'BatteryBridge','CFBundleDisplayName':'BatteryBridge','CFBundleExecutable':'BatteryBridge','CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.5.9','CFBundleVersion':'14','LSMinimumSystemVersion':'13.0','LSUIElement':True,'CFBundleIconFile':'AppIcon','NSHighResolutionCapable':True,'NSHumanReadableCopyright':'BatteryBridge · local utility · preview'}
+p={'CFBundleIdentifier':'local.batterybridge.agent','CFBundleName':'DeviceBridge','CFBundleDisplayName':'DeviceBridge','CFBundleExecutable':'DeviceBridge','CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.8.2','CFBundleVersion':'22','LSMinimumSystemVersion':'13.0','LSUIElement':True,'CFBundleIconFile':'AppIcon','NSHighResolutionCapable':True,'NSHumanReadableCopyright':'DeviceBridge · local utility · preview'}
 with open(sys.argv[1],'wb') as f:plistlib.dump(p,f)
 PY
 icon_work="${output_dir}/icon-work"
@@ -45,7 +45,14 @@ printf '%s\n' "Built: ${bundle_dir}"
 clang -fobjc-arc -framework Foundation -I "${project_dir}/Sources" "${project_dir}/Sources/Policy.m" "${project_dir}/tests/PolicyTests.m" -o "${output_dir}/policy-tests"
 "${output_dir}/policy-tests"
 clang -fobjc-arc -fblocks -Wno-unused-parameter -mmacosx-version-min=13.0 \
-  -framework Cocoa -framework IOKit -framework ServiceManagement \
-  "${project_dir}/tests/InterfaceTests.m" "${project_dir}/Sources/Protocol.m" "${project_dir}/Sources/Policy.m" \
+  -framework Cocoa -framework IOKit -framework ServiceManagement -framework CoreAudio -framework ApplicationServices \
+  "${project_dir}/tests/InterfaceTests.m" "${project_dir}/Sources/Protocol.m" "${project_dir}/Sources/Policy.m" "${project_dir}/Sources/Display.m" "${project_dir}/Sources/DisplayDDC.m" \
   -o "${output_dir}/interface-tests"
 "${output_dir}/interface-tests"
+
+clang -fobjc-arc -framework Foundation -I "${project_dir}/Sources" \
+  "${project_dir}/Sources/DisplayDDC.m" "${project_dir}/tests/DisplayTests.m" -o "${output_dir}/display-tests"
+"${output_dir}/display-tests"
+clang -fobjc-arc -fblocks -mmacosx-version-min=13.0 -framework Cocoa -framework IOKit -framework CoreAudio -framework ApplicationServices -I "${project_dir}/Sources" \
+  "${project_dir}/Sources/Display.m" "${project_dir}/Sources/DisplayDDC.m" "${project_dir}/tests/DisplayControllerTests.m" -o "${output_dir}/display-controller-tests"
+"${output_dir}/display-controller-tests"

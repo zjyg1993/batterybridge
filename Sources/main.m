@@ -8,11 +8,14 @@
 #import "Protocol.h"
 #import "Policy.h"
 #import "Brand.h"
+#import "Display.h"
+#import "DisplayDDC.h"
 
+// Retained across the DeviceBridge rename for preferences, login items and permissions.
 static NSString *const BundleID=@"local.batterybridge.agent";
-static NSString *const Version=@"0.5.9-preview";
-static NSString *BBApplicationTitle(void){return [NSString stringWithFormat:@"BatteryBridge %@",Version];}
-static NSString *const InstallPath=@"/Applications/BatteryBridge.app";
+static NSString *const Version=@"0.8.2-preview";
+static NSString *BBApplicationTitle(void){return [NSString stringWithFormat:@"DeviceBridge %@",Version];}
+static NSString *const InstallPath=@"/Applications/DeviceBridge.app";
 
 static BOOL BBTestingUI=NO;
 @interface BBPreferenceStore:NSObject
@@ -39,21 +42,70 @@ static NSString *errorText(IOReturn e){return [NSString stringWithFormat:@"0x%08
 static NSDictionary *property(IOHIDDeviceRef d){
     NSMutableDictionary *v=[NSMutableDictionary new];
     for(NSString *k in @[@"VendorID",@"ProductID",@"Product",@"Transport",@"LocationID",@"PrimaryUsagePage",@"PrimaryUsage",@"ReportDescriptor"]){id x=(__bridge id)IOHIDDeviceGetProperty(d,(__bridge CFStringRef)k);if(x)v[k]=x;}
+    // Match the actual USB control interface rather than a product-name guess.
+    id interface=CFBridgingRelease(IORegistryEntrySearchCFProperty(IOHIDDeviceGetService(d),kIOServicePlane,CFSTR("bInterfaceNumber"),kCFAllocatorDefault,kIORegistryIterateRecursively|kIORegistryIterateParents));
+    if([interface isKindOfClass:NSNumber.class])v[@"USBInterfaceNumber"]=interface;
     return v;
 }
 // USB describes the host connection, not whether the peripheral is wireless.
 // Only admit interfaces belonging to a receiver whose protocol we recognize.
-typedef NS_ENUM(NSUInteger, BBReceiverKind) { BBReceiverNone, BBReceiverQHW, BBReceiverLogitech, BBReceiverYJX, BBReceiverAulaF75, BBReceiverAulaSC580 };
+typedef NS_ENUM(NSUInteger, BBReceiverKind) { BBReceiverNone, BBReceiverQHW, BBReceiverLogitech, BBReceiverYJX, BBReceiverAulaF75, BBReceiverAulaSC580, BBReceiverRazer, BBReceiverKeychron, BBReceiverGlorious, BBReceiverSteelSeries, BBReceiverCompx, BBReceiverMchose, BBReceiverATKKeyboard, BBReceiverASUSMouse, BBReceiverASUSOmni };
+#import "ModernReceivers.h"
+// Exact receiver IDs only. Wired IDs and Bluetooth transports are deliberately absent.
+static NSDictionary *receiverProfile(NSDictionary*p){
+    if(![p[@"Transport"] isEqual:@"USB"])return nil;
+    unsigned vid=[p[@"VendorID"] intValue],pid=[p[@"ProductID"] intValue];
+    unsigned page=[p[@"PrimaryUsagePage"] intValue];
+    NSNumber*interface=p[@"USBInterfaceNumber"];NSData*desc=p[@"ReportDescriptor"];
+    if(vid==0x1532){
+        NSString*name=nil;int control=2;BOOL keyboard=YES;
+        switch(pid){
+            case 0x025c:name=@"Razer BlackWidow V3 Pro";break;
+            case 0x0271:name=@"Razer BlackWidow V3 Mini HyperSpeed";control=3;break;
+            case 0x02ba:name=@"Razer BlackWidow V4 Mini HyperSpeed";control=3;break;
+            case 0x02d5:name=@"Razer BlackWidow V4 Tenkeyless HyperSpeed";break;
+            case 0x0290:name=@"Razer DeathStalker V2 Pro";break;
+            case 0x0296:name=@"Razer DeathStalker V2 Pro TKL";break;
+            case 0x00a6:name=@"Razer Viper V2 Pro";control=0;keyboard=NO;break;
+            case 0x00c1:name=@"Razer Viper V3 Pro";control=0;keyboard=NO;break;
+            case 0x00b7:name=@"Razer DeathAdder V3 Pro";control=0;keyboard=NO;break;
+            case 0x00c5:name=@"Razer DeathAdder V3 HyperSpeed";control=0;keyboard=NO;break;
+            case 0x00e6:name=@"Razer Viper V4 Pro";control=0;keyboard=NO;break;
+            case 0x00f0:name=@"Razer DeathAdder V4 Pro Carbon Fiber";control=0;keyboard=NO;break;
+            case 0x00ab:name=@"Razer Basilisk V3 Pro";control=0;keyboard=NO;break;
+            case 0x00cd:name=@"Razer Basilisk V3 Pro 35K";control=0;keyboard=NO;break;
+            case 0x00d7:name=@"Razer Basilisk V3 Pro 35K Phantom Green";control=0;keyboard=NO;break;
+            case 0x00b0:name=@"Razer Cobra Pro";control=0;keyboard=NO;break;
+            case 0x009f:name=@"Razer Viper Mini Signature Edition";control=0;keyboard=NO;break;
+            case 0x00bf:name=@"Razer DeathAdder V4 Pro";control=0;keyboard=NO;break;
+        }
+        if(name&&interface&&interface.intValue==control)return @{@"kind":@(BBReceiverRazer),@"name":name,@"category":keyboard?@"Keyboard":@"Mouse",@"transaction":keyboard?@0x9f:@0x1f};
+    }
+    if(vid==0x3434&&pid==0xd028&&interface&&interface.intValue==4&&page>=0xff00&&BBHIDReportMatches(desc,0xb3,9,63)&&BBHIDReportMatches(desc,0xb4,8,63))
+        return @{@"kind":@(BBReceiverKeychron),@"name":@"Keychron Ultra-Link 8K (M5 / M6 8K)",@"category":@"Mouse"};
+    if(vid==0x258a&&pid==0x2022&&(page==0xffa0||page==0xffff)&&BBHIDReportMatches(desc,0,11,64))
+        return @{@"kind":@(BBReceiverGlorious),@"name":@"Glorious Model O Wireless",@"category":@"Mouse"};
+    if(vid==0x1038&&page==0xffc0&&BBHIDReportMatches(desc,0,9,64)){
+        NSString*name=nil;
+        switch(pid){case 0x1838:case 0x1878:name=@"SteelSeries Aerox 3 Wireless";break;
+            case 0x1852:case 0x185c:case 0x1860:name=@"SteelSeries Aerox 5 Wireless";break;
+            case 0x1858:case 0x1874:name=@"SteelSeries Aerox 9 Wireless";break;}
+        if(name)return @{@"kind":@(BBReceiverSteelSeries),@"name":name,@"category":@"Mouse"};
+    }
+    return BBModernReceiverProfile(p);
+}
 static BBReceiverKind receiverKind(NSDictionary*p){
     if(![p[@"Transport"] isEqual:@"USB"])return BBReceiverNone;
     unsigned vid=[p[@"VendorID"] intValue],pid=[p[@"ProductID"] intValue],page=[p[@"PrimaryUsagePage"] intValue],usage=[p[@"PrimaryUsage"] intValue];
     if(vid==0x3837&&pid==0x1015&&[p[@"Product"] isEqual:@"MCHOSE K87 V3 2.4G"]&&page==0xff80&&usage==1)return BBReceiverQHW;
     NSString*name=p[@"Product"];
-    if(vid==0x046d&&page==0xff00&&usage==1&&[name isKindOfClass:NSString.class]&&[name rangeOfString:@"receiver" options:NSCaseInsensitiveSearch].location!=NSNotFound)return BBReceiverLogitech;
+    BOOL namedReceiver=[name isKindOfClass:NSString.class]&&[name rangeOfString:@"receiver" options:NSCaseInsensitiveSearch].location!=NSNotFound;
+    BOOL superstrike=pid==0xc54d&&BBHIDReportMatches(p[@"ReportDescriptor"],0x10,9,6);
+    if(vid==0x046d&&page==0xff00&&usage==1&&(namedReceiver||superstrike))return BBReceiverLogitech;
     if(vid==0xa8a5&&pid==0x2255&&page==1&&usage==2&&BBYJXDescriptorMatches(p[@"ReportDescriptor"]))return BBReceiverYJX;
     if(vid==0x3554&&pid==0xfa09&&page==0xff02&&BBHIDReportMatches(p[@"ReportDescriptor"],0x13,9,19)&&BBHIDReportMatches(p[@"ReportDescriptor"],0x13,8,19))return BBReceiverAulaF75;
     if(vid==0x089d&&pid==0x062f&&page==0xff00&&usage==1&&BBHIDReportMatches(p[@"ReportDescriptor"],0x0f,11,32))return BBReceiverAulaSC580;
-    return BBReceiverNone;
+    return (BBReceiverKind)[receiverProfile(p)[@"kind"] unsignedIntegerValue];
 }
 static NSString *physicalID(NSDictionary*p){return [NSString stringWithFormat:@"%04x:%04x:%@",[p[@"VendorID"] intValue],[p[@"ProductID"] intValue],p[@"LocationID"]?:@0];}
 
@@ -61,22 +113,42 @@ static NSString *physicalID(NSDictionary*p){return [NSString stringWithFormat:@"
     IOHIDDeviceRef _device; uint8_t _buffer[512]; BOOL _opened;
 }
 @property NSMutableArray<NSDictionary*> *frames;
+@property NSSet<NSNumber*> *allowedInputReports;
 @property IOReturn lastError;
 @property(copy) void(^inputHandler)(NSDictionary*);
 - (instancetype)initWithDevice:(IOHIDDeviceRef)d;
 - (BOOL)open;
 - (NSDictionary*)exchange:(uint8_t)rid payload:(NSData*)data matching:(BOOL(^)(NSDictionary*))match;
 - (NSData*)sc580Status:(uint8_t)sequence;
+- (NSData*)featureQuery:(NSData*)query delay:(NSTimeInterval)delay;
+- (NSNumber*)razerValue:(uint8_t)command transaction:(uint8_t)transaction;
+- (NSData*)featureQuery:(NSData*)query reportID:(uint8_t)rid delay:(NSTimeInterval)delay;
 @end
 static void reportCallback(void *ctx,IOReturn result,void *sender,IOHIDReportType type,uint32_t rid,uint8_t*p,CFIndex n){
     BBChannel*c=(__bridge BBChannel*)ctx;
-    if(result!=0||n<1||n>512||![ @[@0x10,@0x11,@0x13,@0x4d,@0xab,@0xf0] containsObject:@(rid)])return;
+    if(type!=kIOHIDReportTypeInput||result!=0||n<1||n>512||![c.allowedInputReports containsObject:@(rid)])return;
     NSDictionary*f=@{@"id":@(rid),@"data":[NSData dataWithBytes:p length:n]};
     if(c.inputHandler)c.inputHandler(f);
     if(c.frames.count<64)[c.frames addObject:f];
 }
 @implementation BBChannel
-- (instancetype)initWithDevice:(IOHIDDeviceRef)d {if((self=[super init])){_device=(IOHIDDeviceRef)CFRetain(d);_frames=[NSMutableArray new];}return self;}
+- (instancetype)initWithDevice:(IOHIDDeviceRef)d {if((self=[super init])){_device=(IOHIDDeviceRef)CFRetain(d);_frames=[NSMutableArray new];
+    BBReceiverKind kind=receiverKind(property(d));NSArray*ids=@[];
+    switch(kind){
+        case BBReceiverLogitech:ids=@[@0x10,@0x11];break;
+        case BBReceiverQHW:ids=@[@0x4d];break;
+        case BBReceiverYJX:ids=@[@0xab,@0xf0];break;
+        case BBReceiverAulaF75:ids=@[@0x13];break;
+        case BBReceiverKeychron:ids=@[@0xb4];break;
+        case BBReceiverSteelSeries:ids=@[@0];break;
+        case BBReceiverCompx:ids=@[@8];break;
+        case BBReceiverATKKeyboard:ids=@[@4];break;
+        case BBReceiverASUSMouse:ids=@[@3];break;
+        case BBReceiverASUSOmni:ids=@[@1];break;
+        default:break; // Feature-only protocols never consume input reports.
+    }
+    _allowedInputReports=[NSSet setWithArray:ids];
+}return self;}
 - (BOOL)open {
     _lastError=IOHIDDeviceOpen(_device,kIOHIDOptionsTypeNone);if(_lastError)return NO;
     _opened=YES;IOHIDDeviceRegisterInputReportCallback(_device,_buffer,sizeof(_buffer),reportCallback,(__bridge void*)self);
@@ -84,13 +156,35 @@ static void reportCallback(void *ctx,IOReturn result,void *sender,IOHIDReportTyp
 }
 - (NSDictionary*)exchange:(uint8_t)rid payload:(NSData*)data matching:(BOOL(^)(NSDictionary*))match {
     if(!_opened)return nil;[_frames removeAllObjects];
-    NSMutableData*packet=[NSMutableData dataWithBytes:&rid length:1];[packet appendData:data];
+    NSMutableData*packet=[NSMutableData new];if(rid)[packet appendBytes:&rid length:1];[packet appendData:data];
     _lastError=IOHIDDeviceSetReport(_device,kIOHIDReportTypeOutput,rid,packet.bytes,packet.length);if(_lastError)return nil;
     CFAbsoluteTime until=CFAbsoluteTimeGetCurrent()+0.65;
     while(CFAbsoluteTimeGetCurrent()<until){
         CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.02,true);
         for(NSDictionary*f in [_frames copy]){if(match(f))return f;}
         [_frames removeAllObjects];
+    }
+    _lastError=kIOReturnTimeout;return nil;
+}
+// Unnumbered feature reports have no leading zero in IOHID's buffer.
+- (NSData*)featureQuery:(NSData*)query delay:(NSTimeInterval)delay {
+    return [self featureQuery:query reportID:0 delay:delay];
+}
+- (NSData*)featureQuery:(NSData*)query reportID:(uint8_t)rid delay:(NSTimeInterval)delay {
+    if(!_opened||!query.length||query.length+1>sizeof _buffer)return nil;
+    NSMutableData*packet=[NSMutableData new];if(rid)[packet appendBytes:&rid length:1];[packet appendData:query];
+    _lastError=IOHIDDeviceSetReport(_device,kIOHIDReportTypeFeature,rid,packet.bytes,packet.length);
+    if(_lastError)return nil;
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode,delay,false);
+    uint8_t b[512]={0};b[0]=rid;CFIndex n=packet.length;
+    _lastError=IOHIDDeviceGetReport(_device,kIOHIDReportTypeFeature,rid,b,&n);
+    return _lastError?nil:[NSData dataWithBytes:b length:n];
+}
+- (NSNumber*)razerValue:(uint8_t)command transaction:(uint8_t)transaction {
+    for(int attempt=0;attempt<3;attempt++){
+        NSData*reply=[self featureQuery:BBRazerQuery(transaction,command) delay:0.1];
+        NSNumber*value=BBRazerDecode(reply,transaction,command);if(value)return value;
+        if(_lastError&&_lastError!=kIOReturnTimeout)return nil;
     }
     _lastError=kIOReturnTimeout;return nil;
 }
@@ -110,6 +204,17 @@ static void reportCallback(void *ctx,IOReturn result,void *sender,IOHIDReportTyp
 }
 - (void)dealloc {if(_opened){IOHIDDeviceRegisterInputReportCallback(_device,_buffer,sizeof(_buffer),NULL,NULL);IOHIDDeviceUnscheduleFromRunLoop(_device,CFRunLoopGetCurrent(),kCFRunLoopDefaultMode);IOHIDDeviceClose(_device,0);}if(_device)CFRelease(_device);}
 @end
+
+static NSDictionary *BBCompxBattery(BBChannel*c){
+    __block NSDictionary*link=nil,*reading=nil;
+    [c exchange:8 payload:BBCompxQuery(3) matching:^BOOL(NSDictionary*f){link=BBCompxDecode(f[@"data"],[f[@"id"] intValue],3);return link!=nil;}];
+    if(![link[@"online"] boolValue])return nil;
+    [c exchange:8 payload:BBCompxQuery(4) matching:^BOOL(NSDictionary*f){reading=BBCompxDecode(f[@"data"],[f[@"id"] intValue],4);return reading!=nil;}];
+    return reading;
+}
+static BOOL BBASUSKeyboardInterfaceMatches(NSDictionary*p,NSString*physical){
+    return [p[@"Transport"] isEqual:@"USB"]&&p[@"LocationID"]&&[physicalID(p) isEqual:physical]&&p[@"USBInterfaceNumber"]&&[p[@"USBInterfaceNumber"] intValue]==2&&[p[@"PrimaryUsagePage"] intValue]==0xff00&&[p[@"PrimaryUsage"] intValue]==2&&BBHIDReportMatches(p[@"ReportDescriptor"],2,9,63)&&BBHIDReportMatches(p[@"ReportDescriptor"],2,8,63);
+}
 
 static NSData *hpp(BBChannel*c,uint8_t slot,uint8_t feature,uint8_t function,NSData*params){
     uint8_t fn=(uint8_t)((function<<4)|0x0d);
@@ -259,6 +364,8 @@ static BOOL mappingEnabled(NSString *identity){return [[BBPreferences() dictiona
         NSString*physical=physicalID(p);if([seen containsObject:physical])continue;[seen addObject:physical];
         NSString*name=qhw?@"MCHOSE K87 V3":(yjx?@"USB Receiver (YJX)":p[@"Product"]?:@"Logitech Receiver");
         if(aulaF75)name=@"AULA F75";if(aulaSC580)name=@"AULA SC580";
+        NSDictionary*profile=receiverProfile(p);
+        if(profile){name=profile[@"name"];[self remember:logicalID(physical,0) physical:physical name:name category:profile[@"category"]];}
         if(qhw)[self remember:logicalID(physical,0) physical:physical name:name category:@"Keyboard"];
         if(aulaF75||aulaSC580)[self remember:logicalID(physical,0) physical:physical name:name category:aulaF75?@"Keyboard":@"Mouse"];
         BOOL targeted=NO;for(NSString*identity in targets)if([identity hasPrefix:[NSString stringWithFormat:@"local.batterybridge.%@.",physical]]){targeted=YES;break;}
@@ -306,8 +413,57 @@ static BOOL mappingEnabled(NSString *identity){return [[BBPreferences() dictiona
         }
         if(!due&&!targeted)continue;
         BBChannel*c=[[BBChannel alloc]initWithDevice:dev];
-        if(![c open]){_errors[physical]=[NSString stringWithFormat:@"设备访问被拒绝 %@；请检查输入监控权限",errorText(c.lastError)];continue;}
-        if(aulaF75||aulaSC580){
+        if(![c open]){
+            if(profile){NSString*identity=logicalID(physical,0);[_samples removeObjectForKey:identity];[_sources removeObjectForKey:identity];}
+            _errors[physical]=[NSString stringWithFormat:@"设备访问被拒绝 %@；请检查输入监控权限",errorText(c.lastError)];continue;
+        }
+        if(profile){
+            __block NSDictionary*reading=nil;
+            if(kind==BBReceiverRazer){
+                uint8_t transaction=[profile[@"transaction"] intValue];
+                NSNumber*level=[c razerValue:0x80 transaction:transaction];
+                if(level){
+                    NSNumber*charge=[c razerValue:0x84 transaction:transaction];
+                    // Both reads must succeed before publishing a current sample.
+                    if(charge)reading=@{@"percent":level,@"charging":@(charge.boolValue),@"full":@(level.intValue==100&&!charge.boolValue),@"approximate":@NO};
+                }
+            }else if(kind==BBReceiverASUSOmni){
+                __block NSDictionary*paired=nil;
+                [c exchange:1 payload:BBASUSPairQuery() matching:^BOOL(NSDictionary*f){paired=BBASUSPairedKeyboard(f[@"data"],[f[@"id"] intValue]);return paired!=nil;}];
+                if(paired){
+                    // Resolve the keyboard channel on THIS physical receiver only.
+                    for(id sibling in devices){
+                        IOHIDDeviceRef keyboardDev=(__bridge IOHIDDeviceRef)sibling;NSDictionary*kp=property(keyboardDev);
+                        if(!BBASUSKeyboardInterfaceMatches(kp,physical))continue;
+                        BBChannel*keyboardChannel=[[BBChannel alloc]initWithDevice:keyboardDev];keyboardChannel.allowedInputReports=[NSSet setWithObject:@2];
+                        if(![keyboardChannel open]){c.lastError=keyboardChannel.lastError;break;}
+                        for(int attempt=0;attempt<2&&!reading;attempt++)[keyboardChannel exchange:2 payload:BBASUSQuery(YES) matching:^BOOL(NSDictionary*f){reading=BBASUSDecode(f[@"data"],[f[@"id"] intValue],YES);return reading!=nil;}];
+                        c.lastError=keyboardChannel.lastError;if(reading)name=[@"ASUS " stringByAppendingString:paired[@"name"]];break;
+                    }
+                }
+            }else for(int attempt=0;attempt<3&&!reading;attempt++){
+                if(kind==BBReceiverCompx){
+                    reading=BBCompxBattery(c);
+                    if(!reading)break; // Never use a receiver's cached percentage while offline.
+                }else if(kind==BBReceiverMchose){
+                    uint8_t rid=[profile[@"reportID"] intValue];
+                    reading=BBMchoseDecode([c featureQuery:BBMchoseQuery(rid==0x11?20:64) reportID:rid delay:0.03],rid);
+                }else if(kind==BBReceiverATKKeyboard){
+                    uint16_t seq=1+arc4random_uniform(65535);
+                    [c exchange:4 payload:BBATKKeyboardQuery(seq) matching:^BOOL(NSDictionary*f){reading=BBATKKeyboardDecode(f[@"data"],[f[@"id"] intValue],seq);return reading!=nil;}];
+                }else if(kind==BBReceiverASUSMouse)[c exchange:3 payload:BBASUSQuery(NO) matching:^BOOL(NSDictionary*f){reading=BBASUSDecode(f[@"data"],[f[@"id"] intValue],NO);return reading!=nil;}];
+                else if(kind==BBReceiverGlorious)reading=BBGloriousDecode([c featureQuery:BBGloriousQuery() delay:0.1]);
+                else if(kind==BBReceiverKeychron)[c exchange:0xb3 payload:BBKeychronQuery() matching:^BOOL(NSDictionary*f){reading=BBKeychronDecode(f[@"data"],[f[@"id"] intValue]);return reading!=nil;}];
+                else if(kind==BBReceiverSteelSeries)[c exchange:0 payload:BBSteelSeriesQuery() matching:^BOOL(NSDictionary*f){if([f[@"id"] intValue]!=0)return NO;reading=BBSteelSeriesDecode(f[@"data"]);return reading!=nil;}];
+                if(!reading&&attempt<2)CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.1,false);
+            }
+            if(reading){[self storeReading:reading physical:physical slot:0 name:name category:profile[@"category"]];[_errors removeObjectForKey:physical];}
+            else {
+                // A sleeping/off receiver must not keep publishing its last reading.
+                NSString*identity=logicalID(physical,0);[_samples removeObjectForKey:identity];[_sources removeObjectForKey:identity];
+                _errors[physical]=[NSString stringWithFormat:@"预览适配：未收到有效电量（%@）；请确认 2.4G 模式、唤醒设备后刷新",(c.lastError?errorText(c.lastError):@"回复格式不匹配")];
+            }
+        }else if(aulaF75||aulaSC580){
             __block NSDictionary*reading=nil;
             for(int attempt=0;attempt<2&&!reading;attempt++){
                 if(aulaF75)[c exchange:0x13 payload:BBAulaF75Query() matching:^BOOL(NSDictionary*f){reading=BBAulaF75Decode(f[@"data"],[f[@"id"] intValue]);return reading!=nil;}];
@@ -442,8 +598,78 @@ static NSTextField*cardLabel(NSString*text,NSRect frame,NSFont*font,NSColor*colo
 }
 @end
 
+// Menu sliders keep the menu open while AppKit tracks the drag. Snapshot
+// refreshes may update availability, but must not move a thumb under the mouse.
+@interface BBMenuSlider:NSSlider
+@property BOOL dragging;
+@end
+@implementation BBMenuSlider
+- (void)mouseDown:(NSEvent*)event {_dragging=YES;@try{[super mouseDown:event];}@finally{_dragging=NO;}}
+@end
+
+@interface BBStatusDeviceView:NSView
+@property NSDictionary *record;
+@property(weak) BBDisplayController *controller;
+@property NSTextField *nameLabel;
+@property NSTextField *stateLabel;
+@property NSArray<BBMenuSlider*> *sliders;
+@property NSArray<NSTextField*> *values;
+- (instancetype)initWithRecord:(NSDictionary*)record controller:(BBDisplayController*)controller;
+- (void)updateRecord:(NSDictionary*)record;
+@end
+@implementation BBStatusDeviceView
+- (BOOL)isFlipped {return YES;}
+- (instancetype)initWithRecord:(NSDictionary*)record controller:(BBDisplayController*)controller {
+    BOOL display=[record[@"category"] isEqual:@"Display"];
+    if((self=[super initWithFrame:NSMakeRect(0,0,344,display?118:60)])){
+        _controller=controller;
+        NSImageView *icon=[[NSImageView alloc]initWithFrame:NSMakeRect(14,10,20,20)];
+        NSString *symbol=display?@"display":([record[@"category"] isEqual:@"Keyboard"]?@"keyboard":([record[@"category"] isEqual:@"Mouse"]?@"computermouse":@"cable.connector"));
+        icon.image=[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:record[@"category"]];icon.contentTintColor=NSColor.secondaryLabelColor;[self addSubview:icon];
+        self.nameLabel=cardLabel(@"",NSMakeRect(42,9,288,20),[NSFont systemFontOfSize:13 weight:NSFontWeightMedium],NSColor.labelColor);[self addSubview:_nameLabel];
+        self.stateLabel=cardLabel(@"",NSMakeRect(42,31,288,17),[NSFont systemFontOfSize:11],NSColor.secondaryLabelColor);[self addSubview:_stateLabel];
+        NSMutableArray *sliders=[NSMutableArray new],*values=[NSMutableArray new];
+        if(display)for(NSUInteger i=0;i<2;i++){
+            CGFloat y=59+i*28;NSString *title=i?@"音量":@"亮度";
+            [self addSubview:cardLabel(title,NSMakeRect(16,y,34,20),[NSFont systemFontOfSize:11],NSColor.secondaryLabelColor)];
+            BBMenuSlider *slider=[[BBMenuSlider alloc]initWithFrame:NSMakeRect(55,y,212,20)];slider.minValue=0;slider.maxValue=100;slider.controlSize=NSControlSizeSmall;slider.continuous=YES;slider.target=self;slider.action=@selector(changeLevel:);slider.tag=i?0x62:0x10;slider.accessibilityIdentifier=i?@"MenuDisplayVolume":@"MenuDisplayBrightness";
+            [sliders addObject:slider];[self addSubview:slider];
+            NSTextField *value=cardLabel(@"",NSMakeRect(274,y,54,20),[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular],NSColor.labelColor);value.alignment=NSTextAlignmentRight;[values addObject:value];[self addSubview:value];
+        }
+        self.sliders=sliders;self.values=values;[self updateRecord:record];
+    }return self;
+}
+- (void)updateRecord:(NSDictionary*)record {
+    self.record=[record copy];BOOL display=[record[@"category"] isEqual:@"Display"],connected=[record[@"connected"] boolValue];
+    _nameLabel.stringValue=record[@"name"]?:@"设备";_nameLabel.toolTip=_nameLabel.stringValue;
+    if(display)_stateLabel.stringValue=!connected?@"未连接":([record[@"scanning"] boolValue]?@"正在读取显示器…":@"已连接 · DDC 硬件控制");
+    else{
+        BOOL fresh=connected&&[record[@"fresh"] boolValue]&&record[@"percent"]!=nil;
+        NSString *state=!connected?@"未连接":(fresh?@"已连接":([record[@"status"] containsString:@"访问被拒绝"]?@"需要输入监控授权":@"接收器在线 · 等待电量"));
+        _stateLabel.stringValue=fresh?[NSString stringWithFormat:@"%@ · %@%% · %@",state,record[@"percent"],BBChargeStatus(record)]:state;
+    }
+    _stateLabel.toolTip=record[@"status"];self.toolTip=record[@"status"];
+    for(NSUInteger i=0;i<_sliders.count;i++){
+        BBMenuSlider *slider=_sliders[i];NSString *feature=i?@"volume":@"brightness";
+        slider.enabled=BBDisplayControlAvailable(record,(uint8_t)slider.tag);
+        slider.accessibilityLabel=[NSString stringWithFormat:@"%@%@",_nameLabel.stringValue,i?@"音量":@"亮度"];
+        if(!slider.dragging){slider.doubleValue=[record[feature][@"percent"] doubleValue];_values[i].stringValue=slider.enabled?[NSString stringWithFormat:@"%.0f%%",slider.doubleValue]:@"不可用";}
+        if(!slider.enabled)_values[i].stringValue=@"不可用";
+        slider.toolTip=slider.enabled?slider.accessibilityLabel:(record[[feature stringByAppendingString:@"Error"]]?:record[@"status"]?:@"此控制不可用");
+    }
+}
+- (void)changeLevel:(BBMenuSlider*)sender {
+    uint8_t code=(uint8_t)sender.tag;
+    if(!sender.enabled||!BBDisplayControlAvailable(_record,code)||!_controller)return;
+    _values[code==0x62?1:0].stringValue=[NSString stringWithFormat:@"%.0f%%",sender.doubleValue];
+    [_controller setPercent:sender.doubleValue code:code identity:_record[@"identity"]];
+}
+- (NSMenu*)menuForEvent:(NSEvent*)event {return nil;}
+@end
+
 @interface BBApp:NSObject<NSApplicationDelegate,NSMenuDelegate,NSWindowDelegate,BBMappingTarget>
 @property BBEngine*engine;
+@property BBDisplayController*displays;
 @property NSWindow*window;
 @property NSScrollView*devicesScroll;
 @property BBFlippedView*devicesView;
@@ -457,6 +683,7 @@ static NSTextField*cardLabel(NSString*text,NSRect frame,NSFont*font,NSColor*colo
 @property int lockFD;
 @property NSStatusItem*statusItem;
 @property NSMenu*statusMenu;
+@property NSTimer*statusMenuTimer;
 @property BOOL handoffPending;
 @end
 static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButton*b=[NSButton buttonWithTitle:title target:target action:action];b.frame=frame;return b;}
@@ -466,26 +693,26 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
     NSString*current=NSBundle.mainBundle.bundlePath;
     NSString*dest=InstallPath,*apps=dest.stringByDeletingLastPathComponent;
     if([current.stringByResolvingSymlinksInPath isEqual:dest.stringByResolvingSymlinksInPath])return YES;
-    NSAlert*a=[NSAlert new];a.messageText=@"安装 BatteryBridge";a.informativeText=@"将安装到 /Applications（应用程序），保留设备映射、上报周期和自启选择。旧版用户目录中的副本会在新应用启动后移入不参与搜索的历史归档。\n\n本工具用于将已适配的 USB 2.4G 键鼠电量接入 macOS 系统，不替代官方驱动。首次读取可能需要输入监控授权。";[a addButtonWithTitle:@"安装并启用"];[a addButtonWithTitle:@"取消"];
+    NSAlert*a=[NSAlert new];a.messageText=@"安装 DeviceBridge";a.informativeText=@"将安装到 /Applications（应用程序），保留设备映射、上报周期和自启选择。旧版用户目录中的副本会在新应用启动后移入不参与搜索的历史归档。\n\n本工具提供 USB 2.4G 键鼠电量桥接与外接显示器 DDC 亮度、音量控制。首次读取可能需要输入监控授权。";[a addButtonWithTitle:@"安装并启用"];[a addButtonWithTitle:@"取消"];
     [NSApp activateIgnoringOtherApps:YES];if([a runModal]!=NSAlertFirstButtonReturn)return NO;
     NSFileManager*fm=NSFileManager.defaultManager;NSError*e=nil;
     if(![fm isWritableFileAtPath:apps]){
-        NSAlert*permission=[NSAlert new];permission.messageText=@"请通过访达安装到应用程序";permission.informativeText=@"此 Mac 的 /Applications 需要管理员授权。请将 DMG 内的 BatteryBridge.app 拖入“应用程序”快捷方式，由访达显示系统授权提示；完成后从“应用程序”打开。";[permission addButtonWithTitle:@"在访达中显示"];[permission runModal];[NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[NSBundle.mainBundle.bundleURL]];return NO;
+        NSAlert*permission=[NSAlert new];permission.messageText=@"请通过访达安装到应用程序";permission.informativeText=@"此 Mac 的 /Applications 需要管理员授权。请将 DMG 内的 DeviceBridge.app 拖入“应用程序”快捷方式，由访达显示系统授权提示；完成后从“应用程序”打开。";[permission addButtonWithTitle:@"在访达中显示"];[permission runModal];[NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[NSBundle.mainBundle.bundleURL]];return NO;
     }
-    NSString*transaction=[apps stringByAppendingPathComponent:[NSString stringWithFormat:@".BatteryBridge-install-%@.noindex",NSUUID.UUID.UUIDString]];
+    NSString*transaction=[apps stringByAppendingPathComponent:[NSString stringWithFormat:@".DeviceBridge-install-%@.noindex",NSUUID.UUID.UUIDString]];
     if(![fm createDirectoryAtPath:transaction withIntermediateDirectories:NO attributes:nil error:&e]){[self showError:e];return NO;}
     NSString*staging=[transaction stringByAppendingPathComponent:@"Payload.app"];
     if(![fm copyItemAtPath:current toPath:staging error:&e]){[fm removeItemAtPath:transaction error:nil];[self showError:e];return NO;}
     NSString*backup=nil;
     if([fm fileExistsAtPath:dest]){
-        if(![[NSBundle bundleWithPath:dest].bundleIdentifier isEqual:BundleID]){[fm removeItemAtPath:transaction error:nil];[self showError:[NSError errorWithDomain:@"BatteryBridge" code:1 userInfo:@{NSLocalizedDescriptionKey:@"目标位置存在其他应用，已停止安装。"}]];return NO;}
+        if(![[NSBundle bundleWithPath:dest].bundleIdentifier isEqual:BundleID]){[fm removeItemAtPath:transaction error:nil];[self showError:[NSError errorWithDomain:@"DeviceBridge" code:1 userInfo:@{NSLocalizedDescriptionKey:@"目标位置存在其他应用，已停止安装。"}]];return NO;}
     }
     // Also stop a legacy ~/Applications instance when /Applications is empty.
     for(NSRunningApplication*r in [NSRunningApplication runningApplicationsWithBundleIdentifier:BundleID]){
             if(r.processIdentifier==NSProcessInfo.processInfo.processIdentifier)continue;
             [r terminate];NSDate*deadline=[NSDate dateWithTimeIntervalSinceNow:8];
             while(!r.terminated&&deadline.timeIntervalSinceNow>0)[[NSRunLoop currentRunLoop]runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
-            if(!r.terminated){[fm removeItemAtPath:transaction error:nil];[self showError:[NSError errorWithDomain:@"BatteryBridge" code:2 userInfo:@{NSLocalizedDescriptionKey:@"旧版本尚未退出，请退出旧版本后重试安装。"}]];return NO;}
+            if(!r.terminated){[fm removeItemAtPath:transaction error:nil];[self showError:[NSError errorWithDomain:@"DeviceBridge" code:2 userInfo:@{NSLocalizedDescriptionKey:@"旧版本尚未退出，请退出旧版本后重试安装。"}]];return NO;}
     }
     if([fm fileExistsAtPath:dest]){
         backup=[transaction stringByAppendingPathComponent:@"Previous.backup"];
@@ -508,7 +735,13 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
 }
 - (void)migrateLegacyInstallation {
     if(BBTestingUI)return;
-    NSString*legacy=[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/BatteryBridge.app"];
+    for(NSString *legacy in @[@"/Applications/BatteryBridge.app",
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Applications/BatteryBridge.app"],
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Applications/DeviceBridge.app"]]){
+        [self archiveLegacyInstallation:legacy];
+    }
+}
+- (void)archiveLegacyInstallation:(NSString*)legacy {
     NSFileManager*fm=NSFileManager.defaultManager;
     if(![fm fileExistsAtPath:legacy]||![[NSBundle bundleWithPath:legacy].bundleIdentifier isEqual:BundleID])return;
     for(NSRunningApplication*r in [NSRunningApplication runningApplicationsWithBundleIdentifier:BundleID]){
@@ -542,7 +775,8 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
     }
     [NSDistributedNotificationCenter.defaultCenter addObserver:self selector:@selector(reopenNotification:) name:@"local.batterybridge.showSettings" object:BundleID];
     [self createStatusItem];
-    self.engine=[BBEngine new];self.thread=[[NSThread alloc]initWithTarget:_engine selector:@selector(run) object:nil];self.thread.name=@"BatteryBridge HID";[_thread start];
+    self.engine=[BBEngine new];self.thread=[[NSThread alloc]initWithTarget:_engine selector:@selector(run) object:nil];self.thread.name=@"DeviceBridge HID";[_thread start];
+    if(!BBTestingUI){self.displays=[BBDisplayController new];[_displays start];}
     [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(wake:) name:NSWorkspaceDidWakeNotification object:nil];
     if(!BBTestingUI&&[BBPreferences() boolForKey:@"AutoStartEnabled"]&&SMAppService.mainAppService.status==SMAppServiceStatusNotRegistered){NSError*e=nil;[SMAppService.mainAppService registerAndReturnError:&e];}
     self.timer=[NSTimer scheduledTimerWithTimeInterval:2 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
@@ -551,17 +785,42 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
 - (void)createStatusItem {
     self.statusItem=[NSStatusBar.systemStatusBar statusItemWithLength:NSSquareStatusItemLength];
     NSImage*icon=BBStatusIcon();
-    icon.template=YES;icon.size=NSMakeSize(19,19);_statusItem.button.image=icon;_statusItem.button.toolTip=[BBApplicationTitle() stringByAppendingString:@" · 设备电量"];
-    self.statusMenu=[[NSMenu alloc]initWithTitle:@"BatteryBridge"];_statusMenu.delegate=self;_statusMenu.autoenablesItems=NO;_statusItem.menu=_statusMenu;
+    icon.template=YES;icon.size=NSMakeSize(19,19);_statusItem.button.image=icon;_statusItem.button.toolTip=[BBApplicationTitle() stringByAppendingString:@" · 设备状态与显示器控制"];
+    self.statusMenu=[[NSMenu alloc]initWithTitle:@"DeviceBridge"];_statusMenu.delegate=self;_statusMenu.autoenablesItems=NO;_statusItem.menu=_statusMenu;
 }
 - (NSMenuItem*)menuItem:(NSString*)title action:(SEL)action value:(id)value {
     NSMenuItem*i=[[NSMenuItem alloc]initWithTitle:title action:action keyEquivalent:@""];i.target=self;i.representedObject=value;i.enabled=action!=NULL;return i;
 }
+- (NSArray*)statusDeviceRecords {NSArray *wireless=[_engine status]?:@[];return [wireless arrayByAddingObjectsFromArray:_displays.snapshot?:@[]];}
 - (void)menuNeedsUpdate:(NSMenu*)menu {
     if(menu!=_statusMenu)return;[menu removeAllItems];
+    NSArray *records=[self statusDeviceRecords];
+    [menu addItem:[self menuItem:@"设备" action:NULL value:nil]];
+    if(!records.count)[menu addItem:[self menuItem:@"尚未发现设备" action:NULL value:nil]];
+    for(NSDictionary *record in records){
+        NSMenuItem *item=[[NSMenuItem alloc]initWithTitle:record[@"name"]?:@"设备" action:NULL keyEquivalent:@""];
+        item.view=[[BBStatusDeviceView alloc]initWithRecord:record controller:_displays];item.enabled=YES;[menu addItem:item];
+    }
+    [menu addItem:NSMenuItem.separatorItem];
     [menu addItem:[self menuItem:@"显示主界面" action:@selector(showSettings:) value:nil]];
-    NSMenuItem*quit=[self menuItem:@"退出 BatteryBridge" action:@selector(quit:) value:nil];quit.keyEquivalent=@"q";[menu addItem:quit];
+    NSMenuItem*quit=[self menuItem:@"退出 DeviceBridge" action:@selector(quit:) value:nil];quit.keyEquivalent=@"q";[menu addItem:quit];
 }
+- (void)refreshStatusMenuViews {
+    NSArray *records=[self statusDeviceRecords];
+    for(NSMenuItem *item in _statusMenu.itemArray)if([item.view isKindOfClass:BBStatusDeviceView.class]){
+        BBStatusDeviceView *view=(BBStatusDeviceView*)item.view;NSDictionary *match=nil;
+        NSString *key=view.record[@"identity"]?:view.record[@"physical"];
+        for(NSDictionary *record in records)if(key.length&&[key isEqual:record[@"identity"]?:record[@"physical"]]){match=record;break;}
+        if(!match){NSMutableDictionary *offline=[view.record mutableCopy];offline[@"connected"]=@NO;offline[@"fresh"]=@NO;offline[@"status"]=@"设备已断开";match=offline;}
+        [view updateRecord:match];
+    }
+}
+- (void)menuWillOpen:(NSMenu*)menu {
+    if(menu!=_statusMenu)return;[_statusMenuTimer invalidate];
+    self.statusMenuTimer=[NSTimer timerWithTimeInterval:.25 target:self selector:@selector(refreshStatusMenuViews) userInfo:nil repeats:YES];
+    [NSRunLoop.mainRunLoop addTimer:_statusMenuTimer forMode:NSRunLoopCommonModes];[self refreshStatusMenuViews];
+}
+- (void)menuDidClose:(NSMenu*)menu {if(menu==_statusMenu){[_statusMenuTimer invalidate];self.statusMenuTimer=nil;}}
 - (void)toggleMapping:(NSMenuItem*)sender {
     NSString*identity=sender.representedObject;if(!identity)return;NSMutableDictionary*choices=[[BBPreferences() dictionaryForKey:@"MappedDevices"] mutableCopy]?:[NSMutableDictionary new];choices[identity]=@(![choices[identity] boolValue]);[BBPreferences() setObject:choices forKey:@"MappedDevices"];[_engine settingsChanged];
 }
@@ -617,7 +876,7 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
         self.intervalPicker=[[NSPopUpButton alloc]initWithFrame:NSMakeRect(520,15,136,26) pullsDown:NO];_intervalPicker.target=self;_intervalPicker.action=@selector(pickInterval:);_intervalPicker.autoresizingMask=NSViewMinXMargin;_intervalPicker.accessibilityLabel=@"自动更新周期";
         for(NSNumber*n in @[@1800,@3600,@7200,@10800]){[_intervalPicker addItemWithTitle:[@"每" stringByAppendingString:BBIntervalLabel(n.doubleValue)]];_intervalPicker.lastItem.representedObject=n;}[settings addSubview:_intervalPicker];
         [settings addSubview:cardLabel(@"登录时启动",NSMakeRect(16,66,220,20),[NSFont systemFontOfSize:13],NSColor.labelColor)];
-        [settings addSubview:cardLabel(@"登录 Mac 后自动运行 BatteryBridge",NSMakeRect(16,86,300,16),[NSFont systemFontOfSize:11],NSColor.secondaryLabelColor)];
+        [settings addSubview:cardLabel(@"登录 Mac 后自动运行 DeviceBridge",NSMakeRect(16,86,300,16),[NSFont systemFontOfSize:11],NSColor.secondaryLabelColor)];
         self.autoStartSwitch=[[NSSwitch alloc]initWithFrame:NSMakeRect(612,73,44,24)];_autoStartSwitch.target=self;_autoStartSwitch.action=@selector(toggleAutoStart:);_autoStartSwitch.controlSize=NSControlSizeSmall;_autoStartSwitch.accessibilityLabel=@"登录时启动";_autoStartSwitch.autoresizingMask=NSViewMinXMargin;[settings addSubview:_autoStartSwitch];
         if(!BBTestingUI){[_window setFrameAutosaveName:@"DeviceListWindow"];[_window setFrameUsingName:@"DeviceListWindow"];}
     }
@@ -625,6 +884,7 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
 - (void)windowWillClose:(NSNotification*)notification {
     if(notification.object==_window)[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 }
+- (void)applicationDidBecomeActive:(NSNotification*)notification {[_displays refreshMediaKeyAuthorization];[self refresh];}
 - (void)windowDidResize:(NSNotification*)notification {if(!_devicesScroll)return;_devicesSignature=nil;[self refresh];}
 - (void)showWindow {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -633,46 +893,61 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
 }
 - (void)refresh {
     NSTimeInterval interval=BBInterval([BBPreferences() objectForKey:@"ReportInterval"]);
-    _statusItem.button.toolTip=[NSString stringWithFormat:@"%@ · 每%@上报",BBApplicationTitle(),BBIntervalLabel(interval)];if(!_window)return;
-    NSArray*rows=[_engine status];_heading.stringValue=@"自动更新";
+    _statusItem.button.toolTip=[NSString stringWithFormat:@"%@ · 设备状态与显示器控制 · 每%@上报",BBApplicationTitle(),BBIntervalLabel(interval)];[self refreshStatusMenuViews];if(!_window)return;
+    NSArray*rows=[[_engine status] arrayByAddingObjectsFromArray:_displays.snapshot?:@[]];_heading.stringValue=@"自动更新";
     for(NSMenuItem*i in _intervalPicker.itemArray)if([i.representedObject doubleValue]==interval){[_intervalPicker selectItem:i];break;}
     _autoStartSwitch.state=[BBPreferences() boolForKey:@"AutoStartEnabled"]?NSControlStateValueOn:NSControlStateValueOff;
     _autoStartSwitch.toolTip=(!BBTestingUI&&SMAppService.mainAppService.status==SMAppServiceStatusRequiresApproval)?@"请在系统设置的登录项中批准自动启动":@"登录 macOS 时自动启动";
-    BOOL denied=NO;for(NSDictionary*r in rows)denied=denied||([r[@"connected"] boolValue]&&[r[@"status"] containsString:@"访问被拒绝"]);_authorizeButton.hidden=!denied;
+    [_displays refreshMediaKeyAuthorization];
+    BOOL denied=NO;for(NSDictionary*r in rows)denied=denied||([r[@"connected"] boolValue]&&[r[@"status"] containsString:@"访问被拒绝"]);BOOL mappedDisplay=NO;for(NSDictionary*r in _displays.snapshot)if([r[@"mappingEnabled"] boolValue]&&[r[@"connected"] boolValue])mappedDisplay=YES;BOOL needsDisplayPermission=mappedDisplay&&!_displays.mediaKeysAuthorized;
+    _authorizeButton.hidden=!(denied||needsDisplayPermission);_authorizeButton.title=needsDisplayPermission&&!denied?@"授权快捷键…":@"授权读取…";_authorizeButton.action=needsDisplayPermission&&!denied?@selector(authorizeDisplays:):@selector(permission:);
     NSString*signature=[NSString stringWithFormat:@"%@:%ld",rows,(long)(NSDate.date.timeIntervalSince1970/120)];if([signature isEqual:_devicesSignature])return;_devicesSignature=signature;
     for(NSView*view in [_devicesView.subviews copy])[view removeFromSuperview];
     // Reserve the vertical scrollbar at all times to avoid a width feedback loop
     // when a legacy scrollbar appears. Overlay scrollbars occupy zero points.
     _devicesScroll.autohidesScrollers=NO;[_devicesScroll tile];
     CGFloat width=MAX(1,_devicesScroll.contentSize.width),height=96;
+    CGFloat rowsHeight=rows.count*height;
     NSUInteger count=rows.count;
-    CGFloat documentHeight=MAX(_devicesScroll.contentSize.height,count*height);
-    _devicesView.frame=NSMakeRect(0,0,width,documentHeight);_devicesView.groupHeight=count?count*height:96;[_devicesView setNeedsDisplay:YES];
-    if(!count){[_devicesView addSubview:cardLabel(@"正在查找 2.4G 设备…",NSMakeRect(20,36,MAX(1,width-40),24),[NSFont systemFontOfSize:13],NSColor.secondaryLabelColor)];return;}
-    for(NSUInteger i=0;i<count;i++){NSRect frame=NSMakeRect(0,i*height,width,height);BBDeviceRow*card=[[BBDeviceRow alloc]initWithFrame:frame record:rows[i]];card.menuTarget=self;card.showsSeparator=i+1<count;[_devicesView addSubview:card];}
+    CGFloat documentHeight=MAX(_devicesScroll.contentSize.height,rowsHeight);
+    _devicesView.frame=NSMakeRect(0,0,width,documentHeight);_devicesView.groupHeight=count?rowsHeight:96;[_devicesView setNeedsDisplay:YES];
+    if(!count){[_devicesView addSubview:cardLabel(@"正在查找 2.4G 设备与外接显示器…",NSMakeRect(20,36,MAX(1,width-40),24),[NSFont systemFontOfSize:13],NSColor.secondaryLabelColor)];return;}
+    CGFloat y=0;
+    for(NSUInteger i=0;i<count;i++){
+        NSDictionary*r=rows[i];BOOL display=[r[@"category"] isEqual:@"Display"];CGFloat h=height;NSRect frame=NSMakeRect(0,y,width,h);y+=h;
+        if(display){BBDisplayRow*row=[[BBDisplayRow alloc]initWithFrame:frame record:r];row.controller=_displays;row.showsSeparator=i+1<count;[_devicesView addSubview:row];}
+        else{BBDeviceRow*card=[[BBDeviceRow alloc]initWithFrame:frame record:r];card.menuTarget=self;card.showsSeparator=i+1<count;[_devicesView addSubview:card];}
+    }
 
 }
+- (void)authorizeDisplays:(id)sender {[_displays authorizeMediaKeys];[self refresh];}
 - (void)permission:(id)sender {
     // Request only when the user invokes the authorization action.
     // The OS owns the consent decision; opening Settings does not imply a grant.
     if(!BBTestingUI&&IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)){[_engine kick];[self refresh];return;}
     [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"]];
 }
-- (void)rescan:(id)sender {[_engine kick];}
+- (void)rescan:(id)sender {[_engine kick];[_displays refreshControls];}
 - (void)login:(id)sender {if(!BBTestingUI)[SMAppService openSystemSettingsLoginItems];}
-- (void)applicationWillTerminate:(NSNotification*)n {_engine.stopping=YES;[_timer invalidate];if(_lockFD>=0)close(_lockFD);}
+- (void)applicationWillTerminate:(NSNotification*)n {[_displays stop];_engine.stopping=YES;[_timer invalidate];[_statusMenuTimer invalidate];if(_lockFD>=0)close(_lockFD);}
 @end
 
 int main(int argc,const char*argv[]){@autoreleasepool{
     NSArray*args=NSProcessInfo.processInfo.arguments;
     if([args containsObject:@"--version"]){puts(Version.UTF8String);return 0;}
+    if([args containsObject:@"--diagnose-displays"]){
+        BBDisplayController*d=[BBDisplayController new];[d startReadOnly];
+        NSDate*deadline=[NSDate dateWithTimeIntervalSinceNow:12];
+        while(!d.discoveryFinished&&deadline.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
+        NSData*data=[NSJSONSerialization dataWithJSONObject:d.snapshot options:NSJSONWritingPrettyPrinted error:nil];puts([[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding].UTF8String);[d stop];return 0;
+    }
     if([args containsObject:@"--diagnose"]){
         BBTestingUI=YES;
-        printf("BatteryBridge %s\nHID access: %d (0=granted, 1=denied, 2=unknown)\n",Version.UTF8String,IOHIDCheckAccess(kIOHIDRequestTypeListenEvent));
+        printf("DeviceBridge %s\nHID access: %d (0=granted, 1=denied, 2=unknown)\n",Version.UTF8String,IOHIDCheckAccess(kIOHIDRequestTypeListenEvent));
         BBEngine*engine=[BBEngine new];engine.diagnostic=YES;[engine scan];return 0;
     }
     if([args containsObject:@"--publisher-test"]){
-        BBSource*s=[BBSource new];BOOL ok=[s publish:@"local.batterybridge.temporary-test" name:@"BatteryBridge Temporary Test" category:@"Keyboard" reading:@{@"percent":@50,@"charging":@NO,@"full":@NO}];printf("Temporary accessory publish: %s\n",ok?"PASS":"FAIL");return ok?0:1;
+        BBSource*s=[BBSource new];BOOL ok=[s publish:@"local.batterybridge.temporary-test" name:@"DeviceBridge Temporary Test" category:@"Keyboard" reading:@{@"percent":@50,@"charging":@NO,@"full":@NO}];printf("Temporary accessory publish: %s\n",ok?"PASS":"FAIL");return ok?0:1;
     }
     BBTestingUI=[NSBundle.mainBundle.infoDictionary[@"BBPreviewMode"] boolValue];
     NSApplication*app=NSApplication.sharedApplication;app.activationPolicy=NSApplicationActivationPolicyAccessory;

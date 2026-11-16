@@ -104,3 +104,139 @@ NSDictionary *BBLogitechDecodeBattery(NSData *payload,uint16_t feature) {
     if(feature==0x1000&&p[0]==0)return nil;
     return @{@"percent":@(p[0]),@"charging":@(p[2]==1||p[2]==2),@"full":@(p[2]==3),@"approximate":@NO};
 }
+
+NSData *BBRazerQuery(uint8_t transaction,uint8_t command) {
+    if(command!=0x80&&command!=0x84)return nil;
+    uint8_t p[90]={0};p[1]=transaction;p[5]=2;p[6]=7;p[7]=command;
+    for(NSUInteger i=2;i<88;i++)p[88]^=p[i];
+    return [NSData dataWithBytes:p length:sizeof p];
+}
+NSNumber *BBRazerDecode(NSData *report,uint8_t transaction,uint8_t command) {
+    if(command!=0x80&&command!=0x84)return nil;
+    const uint8_t*p=report.bytes;NSUInteger n=report.length;
+    if(n==91&&p[0]==0){p++;n--;}
+    if(n!=90||p[0]!=2||p[1]!=transaction||p[2]||p[3]||p[4]||p[5]!=2||p[6]!=7||p[7]!=command)return nil;
+    uint8_t sum=0;for(NSUInteger i=2;i<88;i++)sum^=p[i];if(sum!=p[88])return nil;
+    if(command==0x84)return p[9]<=1?@(p[9]):nil;
+    return @((p[9]*100+127)/255);
+}
+NSData *BBKeychronQuery(void) {
+    // Current upstream keychron-battery-dkms uses SET_OUTPUT, not SET_FEATURE.
+    uint8_t p[63]={6};return [NSData dataWithBytes:p length:sizeof p];
+}
+NSDictionary *BBKeychronDecode(NSData *report,uint8_t rid) {
+    if(rid!=0xb4)return nil;
+    const uint8_t*p=report.bytes;NSUInteger n=report.length;
+    if(n==64&&p[0]==rid){p++;n--;}
+    if(n!=63||p[0]!=6||(p[19]&0x7f)>100)return nil;
+    int percent=p[19]&0x7f;BOOL charging=(p[19]&0x80)!=0;
+    return @{@"percent":@(percent),@"charging":@(charging),@"full":@(percent==100&&!charging),@"approximate":@NO};
+}
+NSData *BBGloriousQuery(void) {
+    uint8_t p[64]={0,0,2,2,0,0x83};return [NSData dataWithBytes:p length:sizeof p];
+}
+NSDictionary *BBGloriousDecode(NSData *report) {
+    const uint8_t*p=report.bytes;NSUInteger n=report.length;
+    if(n==65&&p[0]==0){p++;n--;}
+    // A2 is waking; A4 asleep. Neither is a current battery sample.
+    if(n!=64||p[0]!=0xa1||p[1]!=0||p[2]!=2||p[3]!=2||p[4]!=0||p[5]!=0x83||p[7]>100)return nil;
+    return @{@"percent":@(p[7]),@"charging":@(p[6]!=0),@"full":@(p[7]==100&&p[6]==0),@"approximate":@NO};
+}
+NSData *BBSteelSeriesQuery(void) {
+    uint8_t p[64]={0xd2};return [NSData dataWithBytes:p length:sizeof p];
+}
+NSDictionary *BBSteelSeriesDecode(NSData *report) {
+    const uint8_t*p=report.bytes;NSUInteger n=report.length;
+    if(n==65&&p[0]==0){p++;n--;}
+    if(n<2||n>64||p[0]!=0xd2)return nil;
+    // Aerox protocol uses 1..21 in five-percent steps. Reject other scales.
+    int level=p[1]&0x7f;if(level<1||level>21)return nil;
+    int percent=(level-1)*5;BOOL charging=(p[1]&0x80)!=0;
+    return @{@"percent":@(percent),@"charging":@(charging),@"full":@(percent==100&&!charging),@"approximate":@YES};
+}
+
+static NSDictionary *BBPercentage(uint8_t level,BOOL charging,NSString *name) {
+    if(level>100)return nil;
+    NSMutableDictionary*r=[@{@"percent":@(level),@"charging":@(charging),@"full":@(level==100&&!charging),@"approximate":@NO} mutableCopy];
+    if(name)r[@"name"]=name;return r;
+}
+NSData *BBCompxQuery(uint8_t command) {
+    if(command!=3&&command!=4)return nil;
+    // The 17-byte wire frame includes ID 08; IOHID payload excludes that ID.
+    uint8_t p[16]={command};p[15]=(uint8_t)(0x55-8-command);
+    return [NSData dataWithBytes:p length:sizeof p];
+}
+NSDictionary *BBCompxDecode(NSData *report,uint8_t rid,uint8_t command) {
+    if(rid!=8||(command!=3&&command!=4))return nil;
+    const uint8_t*p=report.bytes;NSUInteger n=report.length;
+    if(n==17&&p[0]==8){p++;n--;}
+    if(n!=16||p[0]!=command||p[1]||p[2]||p[3]||p[4]!=(command==3?1:2))return nil;
+    uint8_t sum=8;for(NSUInteger i=0;i<16;i++)sum+=p[i];if(sum!=0x55)return nil;
+    if(command==3)return p[5]<=1?@{@"online":@(p[5]==1)}:nil;
+    if(p[6]>1)return nil;
+    return BBPercentage(p[5],p[6]==1,nil);
+}
+NSData *BBMchoseQuery(NSUInteger payloadLength) {
+    if(payloadLength!=20&&payloadLength!=64)return nil;
+    NSMutableData*d=[NSMutableData dataWithLength:payloadLength];uint8_t*p=d.mutableBytes;
+    memset(p,0xff,payloadLength);p[0]=(uint8_t)~6;return d;
+}
+NSDictionary *BBMchoseDecode(NSData *report,uint8_t rid) {
+    if(rid!=0x11&&rid!=0x12)return nil;
+    NSUInteger expected=rid==0x11?20:64,n=report.length;const uint8_t*p=report.bytes;
+    if(n==expected+1&&p[0]==rid){p++;n--;}
+    if(n!=expected)return nil;
+    uint8_t decoded[64];for(NSUInteger i=0;i<n;i++)decoded[i]=p[i]^0xff;
+    uint16_t vendor=decoded[1]|(decoded[2]<<8);
+    // Exact command echo, supported vendor, and the live RF status bit required.
+    if(decoded[0]!=6||(vendor!=0x5253&&vendor!=0x3837)||!(decoded[9]&8)||decoded[11]>1)return nil;
+    return BBPercentage(decoded[10],decoded[11]==1,nil);
+}
+NSData *BBATKKeyboardQuery(uint16_t sequence) {
+    uint8_t p[31]={sequence&255,sequence>>8,0x1a};return [NSData dataWithBytes:p length:sizeof p];
+}
+NSDictionary *BBATKKeyboardDecode(NSData *report,uint8_t rid,uint16_t sequence) {
+    if(rid!=4)return nil;
+    const uint8_t*p=report.bytes;NSUInteger n=report.length;
+    if(n==32&&p[0]==rid){p++;n--;}
+    if(n!=31||p[0]!=(sequence&255)||p[1]!=(sequence>>8)||p[2]!=0x1a||p[3]||p[4]||p[5]||p[6]||p[8]>2)return nil;
+    return BBPercentage(p[7],p[8]==1||p[8]==2,nil);
+}
+NSData *BBASUSQuery(BOOL keyboard) {
+    uint8_t p[63]={0x12,keyboard?1:7};return [NSData dataWithBytes:p length:sizeof p];
+}
+NSDictionary *BBASUSDecode(NSData *report,uint8_t rid,BOOL keyboard) {
+    if(rid!=(keyboard?2:3))return nil;
+    const uint8_t*p=report.bytes;NSUInteger n=report.length;
+    if(n==64&&p[0]==rid){p++;n--;}
+    if(n!=63||p[0]!=0x12||p[1]!=(keyboard?1:7)||p[2]||p[3])return nil;
+    uint8_t level=p[keyboard?5:4],charge=p[keyboard?8:9];
+    if(charge>1||(!level&&!charge))return nil; // zero on standby is not empty
+    return BBPercentage(level,charge==1,nil);
+}
+NSData *BBASUSPairQuery(void) {
+    uint8_t p[63]={0xa0};return [NSData dataWithBytes:p length:sizeof p];
+}
+NSDictionary *BBASUSPairedKeyboard(NSData *report,uint8_t rid) {
+    if(rid!=1)return nil;
+    const uint8_t*p=report.bytes;NSUInteger n=report.length;
+    if(n==64&&p[0]==1){p++;n--;}
+    if(n!=63||p[0]!=0xa0||p[1]||p[2]||p[3])return nil;
+    // Pair records identify the peripheral, independent of its cable/BT PID.
+    // Only known byte-6 keyboard layouts are accepted; Falchion uses another layout.
+    NSDictionary*models=@{@0x1a83:@"ROG Azoth",@0x1a85:@"ROG Azoth",
+        @0x1aae:@"ROG Strix Scope II 96 Wireless",@0x1aaf:@"ROG Strix Scope II 96 Wireless",@0x1ab0:@"ROG Strix Scope II 96 Wireless",
+        @0x1b3f:@"ROG Azoth Extreme",@0x1b40:@"ROG Azoth Extreme",@0x1b42:@"ROG Azoth Extreme",
+        @0x1c10:@"ROG Azoth 96 HE / Lite",@0x1c11:@"ROG Azoth 96 HE / Lite",@0x1c12:@"ROG Azoth 96 HE / Lite",
+        @0x1c24:@"ROG Azoth X",@0x1c25:@"ROG Azoth X",@0x1c26:@"ROG Azoth X",
+        @0x1c2f:@"ROG Falcata",@0x1c30:@"ROG Falcata",@0x1c31:@"ROG Falcata",
+        @0x1ce8:@"ROG Strix Morph 96 Wireless",@0x1ce9:@"ROG Strix Morph 96 Wireless",@0x1cea:@"ROG Strix Morph 96 Wireless",
+        @0x1cef:@"ROG Azoth Extreme Special Edition",@0x1cf0:@"ROG Azoth Extreme Special Edition",@0x1cf1:@"ROG Azoth Extreme Special Edition"};
+    NSDictionary*found=nil;
+    for(NSUInteger i=4;i+3<n;i+=4){
+        uint16_t pid=p[i]|(p[i+1]<<8);if(!pid)break;NSString*name=models[@(pid)];if(!name)continue;
+        if(found)return nil; // Ambiguous routing must never merge two keyboards.
+        found=@{@"name":name,@"pid":@(pid)};
+    }
+    return found;
+}

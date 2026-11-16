@@ -9,5 +9,5 @@ static inline void BBPaintBrand(BOOL monochrome){
 static inline NSImage*BBStatusIcon(void){
     NSImage*icon=[NSImage imageWithSize:NSMakeSize(20,20) flipped:NO drawingHandler:^BOOL(NSRect rect){
         [NSGraphicsContext saveGraphicsState];NSAffineTransform*t=[NSAffineTransform transform];[t translateXBy:1 yBy:1];[t scaleBy:18.0/700.0];[t translateXBy:-160 yBy:-220];[t concat];BBPaintBrand(YES);[NSGraphicsContext restoreGraphicsState];return YES;
-    }];icon.template=YES;icon.accessibilityDescription=@"BatteryBridge";return icon;
+    }];icon.template=YES;icon.accessibilityDescription=@"DeviceBridge";return icon;
 }
