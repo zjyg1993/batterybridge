@@ -8,6 +8,8 @@ case "${output_dir}/" in
 esac
 mkdir -p "${output_dir}"
 bundle_dir="${output_dir}/DeviceBridge.app"
+# Recreate the staging bundle so removed features cannot leave stale resources.
+rm -rf "${bundle_dir}"
 mkdir -p "${bundle_dir}/Contents/MacOS" "${bundle_dir}/Contents/Resources"
 clang -fobjc-arc -fblocks -O2 -Wall -Wextra -Wno-unused-parameter \
   -arch arm64 -arch x86_64 -mmacosx-version-min=13.0 \
@@ -16,7 +18,7 @@ clang -fobjc-arc -fblocks -O2 -Wall -Wextra -Wno-unused-parameter \
   -o "${bundle_dir}/Contents/MacOS/DeviceBridge"
 python3 - "${bundle_dir}/Contents/Info.plist" <<'PY'
 import plistlib,sys
-p={'CFBundleIdentifier':'local.batterybridge.agent','CFBundleName':'DeviceBridge','CFBundleDisplayName':'DeviceBridge','CFBundleExecutable':'DeviceBridge','CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.8.2','CFBundleVersion':'22','LSMinimumSystemVersion':'13.0','LSUIElement':True,'CFBundleIconFile':'AppIcon','NSHighResolutionCapable':True,'NSHumanReadableCopyright':'DeviceBridge · local utility · preview'}
+p={'CFBundleIdentifier':'local.batterybridge.agent','CFBundleName':'DeviceBridge','CFBundleDisplayName':'DeviceBridge','CFBundleExecutable':'DeviceBridge','CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.8.6','CFBundleVersion':'26','LSMinimumSystemVersion':'13.0','LSUIElement':True,'CFBundleIconFile':'AppIcon','NSHighResolutionCapable':True,'NSHumanReadableCopyright':'DeviceBridge · local utility · preview'}
 with open(sys.argv[1],'wb') as f:plistlib.dump(p,f)
 PY
 icon_work="${output_dir}/icon-work"

@@ -190,7 +190,7 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     app.engine.snapshot=fixtures;
     NSImage*brand=BBStatusIcon();ensure(brand.isTemplate&&brand.size.width==20,"brand menu bar icon is a monochrome system template");
     [app buildWindow];
-    BOOL hasListTitle=NO;for(NSView*v in app.window.contentView.subviews)if([v isKindOfClass:NSTextField.class]&&[[(NSTextField*)v stringValue] isEqual:@"设备列表"])hasListTitle=YES;
+    BOOL hasListTitle=NO;for(NSView*v in app.devicesView.subviews)if([v isKindOfClass:NSTextField.class]&&[[(NSTextField*)v stringValue] isEqual:@"设备列表"])hasListTitle=YES;
     ensure(hasListTitle,"main window title uses device list wording");
     ensure(app.intervalPicker.numberOfItems==4,"main window offers four update intervals");
     [app.intervalPicker selectItemAtIndex:0];app.engine.forcePoll=NO;[app pickInterval:app.intervalPicker];
@@ -215,7 +215,17 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     ensure(!app.authorizeButton.hidden,"returning to app detects revoked permission");
     permissionDisplays.trusted=YES;[app applicationDidBecomeActive:[NSNotification notificationWithName:NSApplicationDidBecomeActiveNotification object:NSApp]];
     ensure(app.authorizeButton.hidden,"returning from Settings detects newly granted permission");
+    [permissionDisplays setValue:@YES forKey:@"permissionCheckComplete"];[permissionDisplays setValue:@0 forKey:@"deviceControlStatus"];permissionDisplays.trusted=NO;permissionDisplays.activeTap=NO;[app refresh];
+    ensure(app.authorizeButton.hidden,"granted device-control permission hides authorization even if AX preflight is false");
+    [permissionDisplays setValue:@1 forKey:@"deviceControlStatus"];permissionDisplays.trusted=YES;permissionDisplays.activeTap=YES;[app refresh];
+    ensure(app.authorizeButton.hidden,"PostEvent denial cannot override Accessibility or a working filtering tap");
+    [permissionDisplays setValue:@2 forKey:@"deviceControlStatus"];[app refresh];
+    ensure(app.authorizeButton.hidden,"unknown PostEvent state cannot override working shortcut access");
+    permissionDisplays.trusted=NO;permissionDisplays.activeTap=NO;[app refresh];
+    ensure(!app.authorizeButton.hidden,"authorization returns when all shortcut access is unavailable");
+    [permissionDisplays setValue:@NO forKey:@"permissionCheckComplete"];permissionDisplays.trusted=YES;permissionDisplays.activeTap=NO;
     [app menuNeedsUpdate:app.statusMenu];BBStatusDeviceView *menuDisplay=nil;
+    ensure([[app.statusMenu itemAtIndex:0].title isEqual:@"显示器"]&&[[app.statusMenu itemAtIndex:2].title isEqual:@"2.4G 设备"],"status menu groups displays above wireless devices");
     for(NSMenuItem *item in app.statusMenu.itemArray)if([item.view isKindOfClass:BBStatusDeviceView.class]&&[[(BBStatusDeviceView*)item.view record][@"category"] isEqual:@"Display"])menuDisplay=(BBStatusDeviceView*)item.view;
     ensure(menuDisplay&&menuDisplay.sliders.count==2,"status menu exposes brightness and volume for each display");
     NSMutableDictionary *menuRecord=[displayFixture mutableCopy];menuRecord[@"mappingEnabled"]=@NO;[menuDisplay updateRecord:menuRecord];
@@ -243,19 +253,22 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     BBStatusDeviceView *staleMenu=[[BBStatusDeviceView alloc]initWithRecord:@{@"name":@"Mouse",@"connected":@YES,@"fresh":@NO,@"percent":@99} controller:nil];
     ensure(![staleMenu.stateLabel.stringValue containsString:@"99"],"wireless menu never presents a stale percentage as current");
     [app menuDidClose:app.statusMenu];ensure(!app.statusMenuTimer,"closing menu releases update timer");
-    NSUInteger displayRows=0;for(NSView*v in app.devicesView.subviews)if([v isKindOfClass:BBDisplayRow.class]){
+    NSUInteger displayRows=0;for(NSView*v in app.displayGroup.subviews)if([v isKindOfClass:BBDisplayRow.class]){
         displayRows++;BBDisplayRow*r=(BBDisplayRow*)v;NSMenu *injected=[NSMenu new];[injected addItemWithTitle:@"删除" action:NULL keyEquivalent:@""];r.menu=injected;
         ensure([r menuForEvent:rightClick]==nil,"display cannot be deleted through a context menu even if a menu is assigned");ensure(r.brightnessSlider.enabled&&r.volumeSlider.enabled,"display row exposes both detected controls");
         ensure(NSMaxX(r.volumeSlider.frame)<=NSMinX(r.mappingSwitch.frame),"display controls precede mapping switch");
         ensure(r.mappingSwitch.state==NSControlStateValueOn&&r.refreshButton.frame.origin.x==r.bounds.size.width-50,"display mapping and refresh align with wireless device rows");
     }
     ensure(displayRows==1,"display discovered alongside wireless receivers");
-    ensure(fabs(app.devicesView.groupHeight-(fixtures.count*96+96))<1,"mixed device row heights fit scrolling document");
+    ensure(app.displayGroup.groupHeight==96&&app.wirelessGroup.groupHeight==fixtures.count*96,"each category has its own grouped rows");
+    ensure(NSMaxY(app.displayGroup.frame)<NSMinY(app.wirelessHeading.frame)&&NSMaxY(app.wirelessGroup.frame)<NSMinY(app.generalHeading.frame),"displays precede wireless devices and general settings");
+    ensure(app.settingsGroup.superview==app.devicesView&&app.authorizeButton.superview==app.devicesView,"settings and header belong to the same scroll document");
+    ensure(app.devicesScroll.superview==app.window.contentView&&app.window.contentView.subviews.count==1,"entire window content scrolls together");
     for(NSNumber*legacy in @[@YES,@NO]){
         app.devicesScroll.scrollerStyle=legacy.boolValue?NSScrollerStyleLegacy:NSScrollerStyleOverlay;
         for(NSValue*size in @[[NSValue valueWithSize:NSMakeSize(560,420)],[NSValue valueWithSize:NSMakeSize(900,620)]]){
             [app.window setContentSize:size.sizeValue];app.devicesSignature=nil;[app refresh];
-            for(NSView*row in app.devicesView.subviews){
+            for(NSView*row in [app.displayGroup.subviews arrayByAddingObjectsFromArray:app.wirelessGroup.subviews]){
                 ensure(row.frame.size.height==96,"display and wireless rows share the same height");
                 for(NSView*control in row.subviews)ensure(NSMinX(control.frame)>=0&&NSMaxX(control.frame)<=row.bounds.size.width,"mixed row controls fit at narrow and wide widths");
             }
@@ -269,16 +282,20 @@ int main(int argc,const char*argv[]){@autoreleasepool{
         for(NSValue*size in @[[NSValue valueWithSize:NSMakeSize(560,420)],[NSValue valueWithSize:NSMakeSize(660,330)],[NSValue valueWithSize:NSMakeSize(900,620)],[NSValue valueWithSize:NSMakeSize(1400,700)]]){
             [app.window setContentSize:size.sizeValue];app.devicesSignature=nil;[app refresh];
             CGFloat available=app.devicesScroll.contentSize.width;
-            ensure(app.devicesView.subviews.count==many.count,"all device cards remain present after resize");
+            ensure(app.wirelessGroup.subviews.count==many.count,"all wireless rows remain present after resize");
             for(NSView*v in app.devicesView.subviews)ensure(NSMinX(v.frame)>=0&&NSMaxX(v.frame)<=available+0.5,"card stays within viewport including legacy scrollbar");
             ensure(app.devicesView.frame.size.width<=available+0.5&&!app.devicesScroll.hasHorizontalScroller,"no horizontal document overflow");
-            NSUInteger cols=0;for(NSView*v in app.devicesView.subviews)if(NSMinY(v.frame)==0)cols++;
-            for(BBDeviceRow*row in app.devicesView.subviews){
-                ensure(fabs(row.frame.size.width-available)<0.5,"each device row fills the list width");
+            NSUInteger cols=0;for(NSView*v in app.wirelessGroup.subviews)if(NSMinY(v.frame)==0)cols++;
+            for(BBDeviceRow*row in app.wirelessGroup.subviews){
+                ensure(fabs(row.frame.size.width-app.wirelessGroup.bounds.size.width)<0.5,"each device row fills the list width");
                 for(NSView*control in row.subviews)ensure(NSMinX(control.frame)>=0&&NSMaxX(control.frame)<=available,"row content stays inside narrow and wide windows");
             }
             ensure(cols==1,"devices stay in a single list at every window width");
-            ensure(app.devicesScroll.frame.size.height==size.sizeValue.height-292,"card viewport grows with window height");
+            ensure(app.devicesScroll.frame.size.height==size.sizeValue.height,"whole-page viewport grows with window height");
+            CGFloat bottom=app.devicesView.bounds.size.height-app.devicesScroll.contentSize.height;
+            [app.devicesScroll.contentView scrollToPoint:NSMakePoint(0,bottom)];[app.devicesScroll reflectScrolledClipView:app.devicesScroll.contentView];
+            ensure(NSMaxY(app.settingsGroup.frame)<=NSMaxY(app.devicesScroll.documentVisibleRect),"general settings are reachable by scrolling to the bottom");
+            ensure(NSMinY(app.displayHeading.frame)<NSMinY(app.devicesScroll.documentVisibleRect),"display heading scrolls away with the page");
         }
     }
     app.engine.snapshot=fixtures;[app.window setContentSize:NSMakeSize(660,330)];app.devicesSignature=nil;[app refresh];
@@ -307,8 +324,8 @@ int main(int argc,const char*argv[]){@autoreleasepool{
         BBPermissionDisplayController *permissionDisplays=[BBPermissionDisplayController new];app.displays=permissionDisplays;[app.displays setValue:@[displayFixture] forKey:@"snapshot"];
         app.engine.snapshot=fixtures;[app.window setContentSize:NSMakeSize(660,600)];app.devicesSignature=nil;[app refresh];
         if(argc>2)app.window.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
-        NSView*root=app.window.contentView;
-        NSBitmapImageRep*rep=[[NSBitmapImageRep alloc]initWithBitmapDataPlanes:NULL pixelsWide:1320 pixelsHigh:1200 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];rep.size=NSMakeSize(660,600);
+        NSView*root=app.devicesView;
+        NSBitmapImageRep*rep=[[NSBitmapImageRep alloc]initWithBitmapDataPlanes:NULL pixelsWide:(NSInteger)(root.bounds.size.width*2) pixelsHigh:(NSInteger)(root.bounds.size.height*2) bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];rep.size=root.bounds.size;
         NSGraphicsContext*ctx=[NSGraphicsContext graphicsContextWithBitmapImageRep:rep];[NSGraphicsContext saveGraphicsState];[NSGraphicsContext setCurrentContext:ctx];[root.effectiveAppearance performAsCurrentDrawingAppearance:^{[NSColor.windowBackgroundColor setFill];NSRectFill(root.bounds);[root displayRectIgnoringOpacity:root.bounds inContext:ctx];}];[NSGraphicsContext restoreGraphicsState];
         NSData*png=[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];ensure([png writeToFile:[NSString stringWithUTF8String:argv[1]] atomically:YES],"offscreen preview saved");
     }

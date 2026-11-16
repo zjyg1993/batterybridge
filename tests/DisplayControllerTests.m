@@ -29,11 +29,26 @@
 @end
 @interface BBDisplayController (Testing)
 - (void)adjustKey:(int)key record:(NSDictionary*)record;
+- (void)updateSystemControls;
+- (BOOL)hasActiveMediaKeyTap;
 @end
 @implementation BBQuietDisplayController
 - (NSArray*)connectedScreens {return _fixtureScreens?:@[];}
 - (NSArray*)displayChannels {return _fixtureChannels?:@[];}
 - (void)showHUD:(NSString*)name feature:(NSString*)feature percent:(double)percent {}
+@end
+@interface BBPermissionProbe:BBDisplayController
+@property int permissionFixture;
+@property int settingsOpened;
+@property int accessRequested;
+@end
+@implementation BBPermissionProbe
+- (int)deviceControlAccess {return _permissionFixture;}
+- (BOOL)openMediaKeySettings {_settingsOpened++;return YES;}
+- (void)requestMediaKeyAccess {_accessRequested++;}
+- (BOOL)accessibilityAuthorized {return NO;}
+- (BOOL)hasActiveMediaKeyTap {return NO;}
+- (void)updateSystemControls {} // Never installs a real event tap during tests.
 @end
 static void check(BOOL ok,const char*message){if(!ok){fprintf(stderr,"FAIL: %s\n",message);exit(1);}}
 static void settle(void){[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.25]];}
@@ -130,5 +145,14 @@ int main(void){@autoreleasepool{
     bus.identity=@{@"name":@"Generic Monitor"};second.identity=bus.identity;[c rescan];settle();
     check(!records[@"display:A"][@"brightness"]&&!records[@"display:B"][@"brightness"],"ambiguous identical monitors never acquire writable channels");
     [c setValue:@NO forKey:@"running"];
+    BBPermissionProbe *probe=[[BBPermissionProbe alloc]initWithDefaults:[BBMemoryDisplayDefaults new]];[probe setValue:@YES forKey:@"running"];
+    probe.permissionFixture=0;[probe refreshMediaKeyAuthorization];settle();check(probe.mediaKeysAuthorized,"asynchronous IOKit grant recognized with AX false");
+    probe.permissionFixture=1;[probe setValue:@0 forKey:@"lastPermissionCheck"];[probe refreshMediaKeyAuthorization];settle();check(!probe.mediaKeysAuthorized,"asynchronous revocation recognized");
+    [probe authorizeMediaKeys];settle();
+    check(probe.settingsOpened==1&&probe.accessRequested==1,"denied authorization opens Settings and requests access without blocking UI");
+    probe.permissionFixture=0;[probe setValue:@0 forKey:@"lastPermissionCheck"];[probe refreshMediaKeyAuthorization];settle();
+    [probe authorizeMediaKeys];settle();
+    check(probe.settingsOpened==1&&probe.accessRequested==1,"granted authorization does not reopen Settings or request again");
+    [probe setValue:@NO forKey:@"running"];
     puts("Display controller tests passed");return 0;
 }}

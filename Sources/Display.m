@@ -1,6 +1,7 @@
 #import "Display.h"
 #import "DisplayDDC.h"
 #import <IOKit/IOKitLib.h>
+#import <IOKit/hidsystem/IOHIDLib.h>
 #import <IOKit/graphics/IOGraphicsLib.h>
 #import <IOKit/i2c/IOI2CInterface.h>
 #import <CoreAudio/CoreAudio.h>
@@ -179,6 +180,11 @@ static NSString *BBDefaultDisplayAudioName(void) {
 @property(atomic) NSUInteger generation;
 @property CFMachPortRef eventTap;
 @property CFTimeInterval lastEventTapAttempt;
+@property dispatch_queue_t permissionQueue;
+@property BOOL permissionCheckInFlight;
+@property BOOL permissionCheckComplete;
+@property IOHIDAccessType deviceControlStatus;
+@property CFTimeInterval lastPermissionCheck;
 @property CFRunLoopSourceRef eventSource;
 @property NSMutableSet<NSNumber*>*consumedKeys;
 @property CGDirectDisplayID nativeSource;
@@ -195,7 +201,7 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
 @implementation BBDisplayController
 - (instancetype)init {return [self initWithDefaults:NSUserDefaults.standardUserDefaults];}
 - (instancetype)initWithDefaults:(NSUserDefaults*)defaults {
-    if((self=[super init])){BBLoadDisplayAPIs();_snapshot=@[];_queue=dispatch_queue_create("local.devicebridge.ddc",DISPATCH_QUEUE_SERIAL);_channels=[NSMutableDictionary new];_records=[NSMutableDictionary new];_pending=[NSMutableDictionary new];_unmuted=[NSMutableDictionary new];_controlErrors=[NSMutableDictionary new];_consumedKeys=[NSMutableSet new];_nativeLevel=-1;_preferences=defaults;
+    if((self=[super init])){BBLoadDisplayAPIs();_snapshot=@[];_queue=dispatch_queue_create("local.devicebridge.ddc",DISPATCH_QUEUE_SERIAL);_channels=[NSMutableDictionary new];_records=[NSMutableDictionary new];_pending=[NSMutableDictionary new];_unmuted=[NSMutableDictionary new];_controlErrors=[NSMutableDictionary new];_consumedKeys=[NSMutableSet new];_nativeLevel=-1;_preferences=defaults;_permissionQueue=dispatch_queue_create("local.devicebridge.permissions",DISPATCH_QUEUE_SERIAL);_deviceControlStatus=kIOHIDAccessTypeUnknown;
         id stored=[defaults objectForKey:@"MappedDisplays"];_mappingChoices=[stored isKindOfClass:NSDictionary.class]?[stored mutableCopy]:[NSMutableDictionary new];
     }return self;
 }
@@ -216,13 +222,31 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
 - (BOOL)accessibilityAuthorized {return AXIsProcessTrusted();}
 - (BOOL)inputMonitoringAuthorized {return CGPreflightListenEventAccess();}
 - (BOOL)hasActiveMediaKeyTap {return _eventTap&&CFMachPortIsValid(_eventTap)&&CGEventTapIsEnabled(_eventTap);}
+- (IOHIDAccessType)deviceControlAccess {return IOHIDCheckAccess(kIOHIDRequestTypePostEvent);}
 - (BOOL)mediaKeysAuthorized {
-    // Input Monitoring may already permit a working filtering tap. Its success
-    // is stronger evidence than a separate Accessibility preflight alone.
-    // Never count preflight for a listen-only tap as permission to filter keys.
-    return [self accessibilityAuthorized]||[self hasActiveMediaKeyTap];
+    // These APIs cover different TCC services. A PostEvent denial must not
+    // override Accessibility or a filtering tap that is actually working.
+    return [self accessibilityAuthorized]||[self hasActiveMediaKeyTap]||
+        (_permissionCheckComplete&&_deviceControlStatus==kIOHIDAccessTypeGranted);
 }
-- (void)refreshMediaKeyAuthorization {if(_running&&!_readOnly)[self updateSystemControls];}
+- (void)refreshMediaKeyAuthorization {
+    if(!_running||_readOnly)return;
+    CFTimeInterval now=CFAbsoluteTimeGetCurrent();
+    if(!_permissionCheckInFlight&&now-_lastPermissionCheck>=1){
+        _permissionCheckInFlight=YES;_lastPermissionCheck=now;
+        // TCC IPC must not run inside an event tap callback or block AppKit.
+        dispatch_async(_permissionQueue,^{IOHIDAccessType status=[self deviceControlAccess];
+            dispatch_async(dispatch_get_main_queue(),^{
+                self.permissionCheckInFlight=NO;if(!self.running)return;
+                BOOL changed=!self.permissionCheckComplete||self.deviceControlStatus!=status;
+                self.deviceControlStatus=status;self.permissionCheckComplete=YES;
+                if(changed)self.lastEventTapAttempt=0;
+                [self updateSystemControls];
+            });
+        });
+    }
+    [self updateSystemControls];
+}
 - (void)publish {[self publishForGeneration:self.generation];}
 - (void)publishForGeneration:(NSUInteger)generation {
     NSMutableArray*copies=[NSMutableArray new];for(NSDictionary*r in _records.allValues)[copies addObject:[r copy]];
@@ -234,13 +258,13 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
 }
 - (void)startReadOnly {if(_running)return;_readOnly=YES;_running=YES;[self rescan];}
 - (void)start {
-    if(_running)return;_running=YES;
+    if(_running)return;_readOnly=NO;_running=YES;
     CGDisplayRegisterReconfigurationCallback(BBDisplayReconfigured,(__bridge void*)self);
     [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(woke:) name:NSWorkspaceDidWakeNotification object:nil];
     [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(woke:) name:NSWorkspaceScreensDidWakeNotification object:nil];
     self.discoveryTimer=[NSTimer timerWithTimeInterval:30 target:self selector:@selector(rescan) userInfo:nil repeats:YES];
     [NSRunLoop.mainRunLoop addTimer:_discoveryTimer forMode:NSRunLoopCommonModes];
-    if(!_readOnly){self.systemTimer=[NSTimer timerWithTimeInterval:.25 target:self selector:@selector(updateSystemControls) userInfo:nil repeats:YES];[NSRunLoop.mainRunLoop addTimer:_systemTimer forMode:NSRunLoopCommonModes];}
+    if(!_readOnly){self.systemTimer=[NSTimer timerWithTimeInterval:.25 target:self selector:@selector(refreshMediaKeyAuthorization) userInfo:nil repeats:YES];[NSRunLoop.mainRunLoop addTimer:_systemTimer forMode:NSRunLoopCommonModes];}
     [self rescan];if(!_readOnly)[self updateSystemControls];
 }
 - (void)woke:(NSNotification*)n {_nativeSource=0;_nativeLevel=-1;[self rescan];}
@@ -250,10 +274,25 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
     if(_eventTap){CGEventTapEnable(_eventTap,false);CFRunLoopRemoveSource(CFRunLoopGetMain(),_eventSource,kCFRunLoopCommonModes);CFRelease(_eventSource);CFRelease(_eventTap);_eventSource=NULL;_eventTap=NULL;}
     dispatch_async(_queue,^{[self.pending removeAllObjects];[self.channels removeAllObjects];[self.records removeAllObjects];});self.snapshot=@[];
 }
+- (void)requestMediaKeyAccess {
+    AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{(__bridge NSString*)kAXTrustedCheckOptionPrompt:@YES});
+    IOHIDRequestAccess(kIOHIDRequestTypePostEvent);
+}
+- (BOOL)openMediaKeySettings {
+    return [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"]];
+}
 - (void)authorizeMediaKeys {
+    _lastPermissionCheck=0;_lastEventTapAttempt=0;
     [self refreshMediaKeyAuthorization];
-    if(!self.mediaKeysAuthorized)AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{(__bridge NSString*)kAXTrustedCheckOptionPrompt:@YES});
-    [self refreshMediaKeyAuthorization];
+    if(self.mediaKeysAuthorized)return;
+    // A previously denied request may silently return false. Always provide
+    // a visible route to Settings; keep TCC requests off the AppKit thread.
+    dispatch_async(_permissionQueue,^{[self requestMediaKeyAccess];});
+    if(![self openMediaKeySettings]){
+        NSAlert *alert=[NSAlert new];alert.messageText=@"请在系统设置中授权快捷键";
+        alert.informativeText=@"打开系统设置 → 隐私与安全性 → 设备控制和数据访问（旧版 macOS 为辅助功能），允许当前 DeviceBridge。返回应用后会自动重新检测。";
+        [alert runModal];
+    }
 }
 - (void)refreshControls {
     // Only an explicit refresh retries features whose writes were rejected.
@@ -360,15 +399,23 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
     __weak BBDisplayController*weak=self;self.hudTimer=[NSTimer scheduledTimerWithTimeInterval:1.2 repeats:NO block:^(NSTimer*t){[weak.hud orderOut:nil];}];
 }
 - (void)updateSystemControls {
-    if(!_running)return;
-    if(_eventTap&&!CFMachPortIsValid(_eventTap)){
+    if(!_running||_readOnly)return;
+    BOOL permissionDenied=![self accessibilityAuthorized]&&![self hasActiveMediaKeyTap]&&_permissionCheckComplete&&_deviceControlStatus!=kIOHIDAccessTypeGranted;
+    if(_eventTap&&(!CFMachPortIsValid(_eventTap)||permissionDenied)){
+        CGEventTapEnable(_eventTap,false);[_consumedKeys removeAllObjects];
         CFRunLoopRemoveSource(CFRunLoopGetMain(),_eventSource,kCFRunLoopCommonModes);CFRelease(_eventSource);CFRelease(_eventTap);_eventSource=NULL;_eventTap=NULL;
     }
     CFTimeInterval now=CFAbsoluteTimeGetCurrent();
-    if(!_eventTap&&([self accessibilityAuthorized]||[self inputMonitoringAuthorized])&&now-_lastEventTapAttempt>=2){
+    // Try the real filtering tap even when preflight caches have not caught up.
+    // PostEvent preflight alone cannot rule out filtering-tap access.
+    if(!_eventTap&&now-_lastEventTapAttempt>=2){
         _lastEventTapAttempt=now;
         _eventTap=CGEventTapCreate(kCGSessionEventTap,kCGHeadInsertEventTap,kCGEventTapOptionDefault,CGEventMaskBit(NX_SYSDEFINED),BBDisplayKeyEvent,(__bridge void*)self);
-        if(_eventTap){_eventSource=CFMachPortCreateRunLoopSource(NULL,_eventTap,0);CFRunLoopAddSource(CFRunLoopGetMain(),_eventSource,kCFRunLoopCommonModes);CGEventTapEnable(_eventTap,true);}
+        if(_eventTap){
+            _eventSource=CFMachPortCreateRunLoopSource(NULL,_eventTap,0);
+            if(_eventSource){CFRunLoopAddSource(CFRunLoopGetMain(),_eventSource,kCFRunLoopCommonModes);CGEventTapEnable(_eventTap,true);}
+            else{CFRelease(_eventTap);_eventTap=NULL;}
+        }
     }
     // Follow changes from an EXISTING native built-in slider. Establish a
     // baseline at startup/wake without overwriting the external monitor.
@@ -411,7 +458,7 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
 @end
 static CGEventRef BBDisplayKeyEvent(CGEventTapProxy proxy,CGEventType type,CGEventRef event,void*context) {
     BBDisplayController*c=(__bridge BBDisplayController*)context;
-    if(type==kCGEventTapDisabledByTimeout||type==kCGEventTapDisabledByUserInput){if(c.running&&c.eventTap)CGEventTapEnable(c.eventTap,true);return event;}
+    if(type==kCGEventTapDisabledByTimeout||type==kCGEventTapDisabledByUserInput){if(c.running&&c.eventTap&&c.mediaKeysAuthorized)CGEventTapEnable(c.eventTap,true);return event;}
     if(type!=NX_SYSDEFINED)return event;NSEvent*e=[NSEvent eventWithCGEvent:event];if(e.subtype!=8)return event;
     int key=(int)((e.data1>>16)&0xffff),state=(int)((e.data1>>8)&0xff);
     if(state==0x0b){if([c.consumedKeys containsObject:@(key)]){[c.consumedKeys removeObject:@(key)];return NULL;}return event;}

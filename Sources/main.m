@@ -13,7 +13,7 @@
 
 // Retained across the DeviceBridge rename for preferences, login items and permissions.
 static NSString *const BundleID=@"local.batterybridge.agent";
-static NSString *const Version=@"0.8.2-preview";
+static NSString *const Version=@"0.8.6-preview";
 static NSString *BBApplicationTitle(void){return [NSString stringWithFormat:@"DeviceBridge %@",Version];}
 static NSString *const InstallPath=@"/Applications/DeviceBridge.app";
 
@@ -673,6 +673,12 @@ static NSTextField*cardLabel(NSString*text,NSRect frame,NSFont*font,NSColor*colo
 @property NSWindow*window;
 @property NSScrollView*devicesScroll;
 @property BBFlippedView*devicesView;
+@property BBFlippedView*displayGroup;
+@property BBFlippedView*wirelessGroup;
+@property BBFlippedView*settingsGroup;
+@property NSTextField*displayHeading;
+@property NSTextField*wirelessHeading;
+@property NSTextField*generalHeading;
 @property NSButton*authorizeButton;
 @property NSString*devicesSignature;
 @property NSTextField*heading;
@@ -791,15 +797,18 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
 - (NSMenuItem*)menuItem:(NSString*)title action:(SEL)action value:(id)value {
     NSMenuItem*i=[[NSMenuItem alloc]initWithTitle:title action:action keyEquivalent:@""];i.target=self;i.representedObject=value;i.enabled=action!=NULL;return i;
 }
-- (NSArray*)statusDeviceRecords {NSArray *wireless=[_engine status]?:@[];return [wireless arrayByAddingObjectsFromArray:_displays.snapshot?:@[]];}
+- (NSArray*)statusDeviceRecords {NSArray *wireless=[_engine status]?:@[];return [(_displays.snapshot?:@[]) arrayByAddingObjectsFromArray:wireless];}
 - (void)menuNeedsUpdate:(NSMenu*)menu {
     if(menu!=_statusMenu)return;[menu removeAllItems];
-    NSArray *records=[self statusDeviceRecords];
-    [menu addItem:[self menuItem:@"设备" action:NULL value:nil]];
-    if(!records.count)[menu addItem:[self menuItem:@"尚未发现设备" action:NULL value:nil]];
-    for(NSDictionary *record in records){
-        NSMenuItem *item=[[NSMenuItem alloc]initWithTitle:record[@"name"]?:@"设备" action:NULL keyEquivalent:@""];
-        item.view=[[BBStatusDeviceView alloc]initWithRecord:record controller:_displays];item.enabled=YES;[menu addItem:item];
+    NSArray *displays=_displays.snapshot?:@[],*wireless=[_engine status]?:@[];
+    if(!displays.count&&!wireless.count)[menu addItem:[self menuItem:@"尚未发现设备" action:NULL value:nil]];
+    for(NSDictionary *section in @[@{@"title":@"显示器",@"rows":displays},@{@"title":@"2.4G 设备",@"rows":wireless}]){
+        if(![section[@"rows"] count])continue;
+        [menu addItem:[self menuItem:section[@"title"] action:NULL value:nil]];
+        for(NSDictionary *record in section[@"rows"]){
+            NSMenuItem *item=[[NSMenuItem alloc]initWithTitle:record[@"name"]?:@"设备" action:NULL keyEquivalent:@""];
+            item.view=[[BBStatusDeviceView alloc]initWithRecord:record controller:_displays];item.enabled=YES;[menu addItem:item];
+        }
     }
     [menu addItem:NSMenuItem.separatorItem];
     [menu addItem:[self menuItem:@"显示主界面" action:@selector(showSettings:) value:nil]];
@@ -861,25 +870,29 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
 - (void)wake:(NSNotification*)n {[_engine kick];}
 - (BOOL)applicationShouldHandleReopen:(NSApplication*)sender hasVisibleWindows:(BOOL)visible {[self showWindow];return YES;}
 - (void)buildWindow {
-    if(!_window){
-        self.window=[[NSWindow alloc]initWithContentRect:NSMakeRect(0,0,720,520) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];_window.releasedWhenClosed=NO;_window.title=BBApplicationTitle();_window.backgroundColor=NSColor.windowBackgroundColor;[_window center];NSView*v=_window.contentView;
-        _window.contentMinSize=NSMakeSize(560,420);_window.delegate=self;
-        NSTextField*title=cardLabel(@"设备列表",NSMakeRect(24,462,200,30),[NSFont systemFontOfSize:22 weight:NSFontWeightSemibold],NSColor.labelColor);title.autoresizingMask=NSViewMinYMargin;[v addSubview:title];
-        NSTextField*devices=cardLabel(@"设备",NSMakeRect(26,428,180,20),[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSColor.labelColor);devices.autoresizingMask=NSViewMinYMargin;[v addSubview:devices];
-        NSButton*refresh=button(@"刷新全部",self,@selector(rescan:),NSMakeRect(594,460,102,32));refresh.image=[NSImage imageWithSystemSymbolName:@"arrow.clockwise" accessibilityDescription:@"刷新全部设备"];refresh.imagePosition=NSImageLeading;refresh.bezelStyle=NSBezelStyleRounded;refresh.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;[v addSubview:refresh];
-        self.authorizeButton=button(@"授权读取…",self,@selector(permission:),NSMakeRect(584,424,112,28));_authorizeButton.hidden=YES;_authorizeButton.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;[v addSubview:_authorizeButton];
-        self.devicesScroll=[[NSScrollView alloc]initWithFrame:NSMakeRect(24,188,672,228)];_devicesScroll.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;_devicesScroll.hasHorizontalScroller=NO;_devicesScroll.hasVerticalScroller=YES;_devicesScroll.autohidesScrollers=NO;_devicesScroll.drawsBackground=NO;_devicesScroll.borderType=NSNoBorder;
-        self.devicesView=[[BBFlippedView alloc]initWithFrame:NSMakeRect(0,0,672,228)];_devicesScroll.documentView=_devicesView;[v addSubview:_devicesScroll];
-        NSTextField*general=cardLabel(@"通用",NSMakeRect(26,152,180,20),[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSColor.labelColor);[v addSubview:general];
-        BBFlippedView*settings=[[BBFlippedView alloc]initWithFrame:NSMakeRect(24,24,672,116)];settings.autoresizingMask=NSViewWidthSizable;settings.groupHeight=116;settings.settingsGroup=YES;[v addSubview:settings];
-        self.heading=cardLabel(@"自动更新",NSMakeRect(16,18,200,20),[NSFont systemFontOfSize:13],NSColor.labelColor);[settings addSubview:_heading];
-        self.intervalPicker=[[NSPopUpButton alloc]initWithFrame:NSMakeRect(520,15,136,26) pullsDown:NO];_intervalPicker.target=self;_intervalPicker.action=@selector(pickInterval:);_intervalPicker.autoresizingMask=NSViewMinXMargin;_intervalPicker.accessibilityLabel=@"自动更新周期";
-        for(NSNumber*n in @[@1800,@3600,@7200,@10800]){[_intervalPicker addItemWithTitle:[@"每" stringByAppendingString:BBIntervalLabel(n.doubleValue)]];_intervalPicker.lastItem.representedObject=n;}[settings addSubview:_intervalPicker];
-        [settings addSubview:cardLabel(@"登录时启动",NSMakeRect(16,66,220,20),[NSFont systemFontOfSize:13],NSColor.labelColor)];
-        [settings addSubview:cardLabel(@"登录 Mac 后自动运行 DeviceBridge",NSMakeRect(16,86,300,16),[NSFont systemFontOfSize:11],NSColor.secondaryLabelColor)];
-        self.autoStartSwitch=[[NSSwitch alloc]initWithFrame:NSMakeRect(612,73,44,24)];_autoStartSwitch.target=self;_autoStartSwitch.action=@selector(toggleAutoStart:);_autoStartSwitch.controlSize=NSControlSizeSmall;_autoStartSwitch.accessibilityLabel=@"登录时启动";_autoStartSwitch.autoresizingMask=NSViewMinXMargin;[settings addSubview:_autoStartSwitch];
-        if(!BBTestingUI){[_window setFrameAutosaveName:@"DeviceListWindow"];[_window setFrameUsingName:@"DeviceListWindow"];}
-    }
+    if(_window)return;
+    self.window=[[NSWindow alloc]initWithContentRect:NSMakeRect(0,0,720,700) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+    _window.releasedWhenClosed=NO;_window.title=BBApplicationTitle();_window.backgroundColor=NSColor.windowBackgroundColor;[_window center];_window.contentMinSize=NSMakeSize(560,420);_window.delegate=self;
+    NSView *content=_window.contentView;
+    self.devicesScroll=[[NSScrollView alloc]initWithFrame:content.bounds];_devicesScroll.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;_devicesScroll.hasHorizontalScroller=NO;_devicesScroll.hasVerticalScroller=YES;_devicesScroll.autohidesScrollers=NO;_devicesScroll.drawsBackground=NO;_devicesScroll.borderType=NSNoBorder;
+    self.devicesView=[[BBFlippedView alloc]initWithFrame:content.bounds];_devicesScroll.documentView=_devicesView;[content addSubview:_devicesScroll];
+    NSTextField *title=cardLabel(@"设备列表",NSMakeRect(24,24,200,30),[NSFont systemFontOfSize:22 weight:NSFontWeightSemibold],NSColor.labelColor);title.accessibilityIdentifier=@"DeviceListTitle";[_devicesView addSubview:title];
+    NSButton *refresh=button(@"刷新全部",self,@selector(rescan:),NSMakeRect(594,24,102,32));refresh.image=[NSImage imageWithSystemSymbolName:@"arrow.clockwise" accessibilityDescription:@"刷新全部设备"];refresh.imagePosition=NSImageLeading;refresh.bezelStyle=NSBezelStyleRounded;refresh.autoresizingMask=NSViewMinXMargin;[_devicesView addSubview:refresh];
+    self.authorizeButton=button(@"授权读取…",self,@selector(permission:),NSMakeRect(584,64,112,28));_authorizeButton.hidden=YES;_authorizeButton.autoresizingMask=NSViewMinXMargin;[_devicesView addSubview:_authorizeButton];
+    self.displayHeading=cardLabel(@"显示器",NSZeroRect,[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSColor.labelColor);
+    self.wirelessHeading=cardLabel(@"2.4G 设备",NSZeroRect,[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSColor.labelColor);
+    self.generalHeading=cardLabel(@"通用",NSZeroRect,[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSColor.labelColor);
+    for(NSTextField *heading in @[_displayHeading,_wirelessHeading,_generalHeading])[_devicesView addSubview:heading];
+    self.displayGroup=[[BBFlippedView alloc]initWithFrame:NSZeroRect];self.wirelessGroup=[[BBFlippedView alloc]initWithFrame:NSZeroRect];
+    [_devicesView addSubview:_displayGroup];[_devicesView addSubview:_wirelessGroup];
+    self.settingsGroup=[[BBFlippedView alloc]initWithFrame:NSMakeRect(24,0,672,116)];_settingsGroup.groupHeight=116;_settingsGroup.settingsGroup=YES;[_devicesView addSubview:_settingsGroup];
+    self.heading=cardLabel(@"自动更新",NSMakeRect(16,18,200,20),[NSFont systemFontOfSize:13],NSColor.labelColor);[_settingsGroup addSubview:_heading];
+    self.intervalPicker=[[NSPopUpButton alloc]initWithFrame:NSMakeRect(520,15,136,26) pullsDown:NO];_intervalPicker.target=self;_intervalPicker.action=@selector(pickInterval:);_intervalPicker.autoresizingMask=NSViewMinXMargin;_intervalPicker.accessibilityLabel=@"自动更新周期";
+    for(NSNumber *n in @[@1800,@3600,@7200,@10800]){[_intervalPicker addItemWithTitle:[@"每" stringByAppendingString:BBIntervalLabel(n.doubleValue)]];_intervalPicker.lastItem.representedObject=n;}[_settingsGroup addSubview:_intervalPicker];
+    [_settingsGroup addSubview:cardLabel(@"登录时启动",NSMakeRect(16,66,220,20),[NSFont systemFontOfSize:13],NSColor.labelColor)];
+    [_settingsGroup addSubview:cardLabel(@"登录 Mac 后自动运行 DeviceBridge",NSMakeRect(16,86,300,16),[NSFont systemFontOfSize:11],NSColor.secondaryLabelColor)];
+    self.autoStartSwitch=[[NSSwitch alloc]initWithFrame:NSMakeRect(612,73,44,24)];_autoStartSwitch.target=self;_autoStartSwitch.action=@selector(toggleAutoStart:);_autoStartSwitch.controlSize=NSControlSizeSmall;_autoStartSwitch.accessibilityLabel=@"登录时启动";_autoStartSwitch.autoresizingMask=NSViewMinXMargin;[_settingsGroup addSubview:_autoStartSwitch];
+    if(!BBTestingUI){[_window setFrameAutosaveName:@"DeviceListWindow"];[_window setFrameUsingName:@"DeviceListWindow"];}
 }
 - (void)windowWillClose:(NSNotification*)notification {
     if(notification.object==_window)[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
@@ -901,25 +914,34 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
     [_displays refreshMediaKeyAuthorization];
     BOOL denied=NO;for(NSDictionary*r in rows)denied=denied||([r[@"connected"] boolValue]&&[r[@"status"] containsString:@"访问被拒绝"]);BOOL mappedDisplay=NO;for(NSDictionary*r in _displays.snapshot)if([r[@"mappingEnabled"] boolValue]&&[r[@"connected"] boolValue])mappedDisplay=YES;BOOL needsDisplayPermission=mappedDisplay&&!_displays.mediaKeysAuthorized;
     _authorizeButton.hidden=!(denied||needsDisplayPermission);_authorizeButton.title=needsDisplayPermission&&!denied?@"授权快捷键…":@"授权读取…";_authorizeButton.action=needsDisplayPermission&&!denied?@selector(authorizeDisplays:):@selector(permission:);
+    _authorizeButton.toolTip=needsDisplayPermission&&!denied?@"请在设备控制和数据访问（旧版 macOS 为辅助功能）中授权当前应用。若开关已开启但仍提示，请退出重开；预览版更新签名后可能需要移除旧条目再添加当前应用。":@"授权读取设备电量";
     NSString*signature=[NSString stringWithFormat:@"%@:%ld",rows,(long)(NSDate.date.timeIntervalSince1970/120)];if([signature isEqual:_devicesSignature])return;_devicesSignature=signature;
-    for(NSView*view in [_devicesView.subviews copy])[view removeFromSuperview];
-    // Reserve the vertical scrollbar at all times to avoid a width feedback loop
-    // when a legacy scrollbar appears. Overlay scrollbars occupy zero points.
+    NSPoint origin=_devicesScroll.contentView.bounds.origin;
     _devicesScroll.autohidesScrollers=NO;[_devicesScroll tile];
-    CGFloat width=MAX(1,_devicesScroll.contentSize.width),height=96;
-    CGFloat rowsHeight=rows.count*height;
-    NSUInteger count=rows.count;
-    CGFloat documentHeight=MAX(_devicesScroll.contentSize.height,rowsHeight);
-    _devicesView.frame=NSMakeRect(0,0,width,documentHeight);_devicesView.groupHeight=count?rowsHeight:96;[_devicesView setNeedsDisplay:YES];
-    if(!count){[_devicesView addSubview:cardLabel(@"正在查找 2.4G 设备与外接显示器…",NSMakeRect(20,36,MAX(1,width-40),24),[NSFont systemFontOfSize:13],NSColor.secondaryLabelColor)];return;}
-    CGFloat y=0;
-    for(NSUInteger i=0;i<count;i++){
-        NSDictionary*r=rows[i];BOOL display=[r[@"category"] isEqual:@"Display"];CGFloat h=height;NSRect frame=NSMakeRect(0,y,width,h);y+=h;
-        if(display){BBDisplayRow*row=[[BBDisplayRow alloc]initWithFrame:frame record:r];row.controller=_displays;row.showsSeparator=i+1<count;[_devicesView addSubview:row];}
-        else{BBDeviceRow*card=[[BBDeviceRow alloc]initWithFrame:frame record:r];card.menuTarget=self;card.showsSeparator=i+1<count;[_devicesView addSubview:card];}
+    CGFloat documentWidth=MAX(1,_devicesScroll.contentSize.width),width=MAX(1,documentWidth-48),y=100;
+    NSArray *displayRows=_displays.snapshot?:@[],*wirelessRows=[_engine status]?:@[];
+    NSArray *groups=@[_displayGroup,_wirelessGroup],*headings=@[_displayHeading,_wirelessHeading],*sections=@[displayRows,wirelessRows];
+    for(NSUInteger section=0;section<sections.count;section++){
+        BBFlippedView *group=groups[section];NSTextField *heading=headings[section];NSArray *items=sections[section];
+        heading.frame=NSMakeRect(26,y,MAX(1,width-4),20);y+=32;
+        CGFloat groupHeight=items.count?items.count*96:64;
+        group.frame=NSMakeRect(24,y,width,groupHeight);group.groupHeight=groupHeight;
+        for(NSView *view in group.subviews.copy)[view removeFromSuperview];
+        if(!items.count)[group addSubview:cardLabel(section?@"未发现 2.4G 设备":@"暂无显示器",NSMakeRect(16,22,MAX(1,width-32),20),[NSFont systemFontOfSize:12],NSColor.secondaryLabelColor)];
+        for(NSUInteger i=0;i<items.count;i++){
+            NSRect frame=NSMakeRect(0,i*96,width,96);
+            if(section==0){BBDisplayRow *row=[[BBDisplayRow alloc]initWithFrame:frame record:items[i]];row.controller=_displays;row.showsSeparator=i+1<items.count;[group addSubview:row];}
+            else{BBDeviceRow *row=[[BBDeviceRow alloc]initWithFrame:frame record:items[i]];row.menuTarget=self;row.showsSeparator=i+1<items.count;[group addSubview:row];}
+        }
+        [group setNeedsDisplay:YES];y+=groupHeight+28;
     }
-
+    _generalHeading.frame=NSMakeRect(26,y,MAX(1,width-4),20);y+=32;
+    _settingsGroup.frame=NSMakeRect(24,y,width,116);y+=140;
+    _devicesView.frame=NSMakeRect(0,0,documentWidth,MAX(y,_devicesScroll.contentSize.height));
+    origin.x=0;origin.y=MAX(0,MIN(origin.y,_devicesView.bounds.size.height-_devicesScroll.contentSize.height));
+    [_devicesScroll.contentView scrollToPoint:origin];[_devicesScroll reflectScrolledClipView:_devicesScroll.contentView];
 }
+
 - (void)authorizeDisplays:(id)sender {[_displays authorizeMediaKeys];[self refresh];}
 - (void)permission:(id)sender {
     // Request only when the user invokes the authorization action.
@@ -935,6 +957,10 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
 int main(int argc,const char*argv[]){@autoreleasepool{
     NSArray*args=NSProcessInfo.processInfo.arguments;
     if([args containsObject:@"--version"]){puts(Version.UTF8String);return 0;}
+    if([args containsObject:@"--diagnose-permissions"]){
+        NSDictionary *report=@{@"version":Version,@"bundlePath":NSBundle.mainBundle.bundlePath,@"bundleIdentifier":NSBundle.mainBundle.bundleIdentifier?:@"",@"accessibilityTrusted":@(AXIsProcessTrusted()),@"deviceControlAccess":@(IOHIDCheckAccess(kIOHIDRequestTypePostEvent)),@"inputMonitoringAccess":@(IOHIDCheckAccess(kIOHIDRequestTypeListenEvent))};
+        NSData *json=[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil];puts([[NSString alloc]initWithData:json encoding:NSUTF8StringEncoding].UTF8String);return 0;
+    }
     if([args containsObject:@"--diagnose-displays"]){
         BBDisplayController*d=[BBDisplayController new];[d startReadOnly];
         NSDate*deadline=[NSDate dateWithTimeIntervalSinceNow:12];

@@ -48,7 +48,7 @@ with ZipFile(sys.argv[2], 'w', ZIP_DEFLATED) as z:
     for name in ['Sources','tests','tools','docs','README.md','AGENTS.md','.gitignore','build.sh','release.sh','package-verified.sh']:
         p=root/name
         for f in sorted(p.rglob('*')) if p.is_dir() else [p]:
-            if f.is_file() and f.name!='.DS_Store':z.write(f,Path('DeviceBridge')/f.relative_to(root))
+            if f.is_file() and f.name!='.DS_Store' and not any(part.endswith('.noindex') for part in f.relative_to(root).parts):z.write(f,Path('DeviceBridge')/f.relative_to(root))
 with ZipFile(sys.argv[2]) as z:
     for name in ['README.md','docs/assets/logo.png']:
         if z.read('DeviceBridge/'+name)!=(root/name).read_bytes():
