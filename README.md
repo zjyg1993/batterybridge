@@ -3,10 +3,11 @@
 # DeviceBridge
 
 项目仓库：[zjyg1993/devicebridge](https://github.com/zjyg1993/devicebridge)。
+此项目纯为爱发电，有需要补充的设备，请提issue或 申请PR；
 
 在 Mac 上查看 **USB 2.4G 无线键鼠电量**，并通过 **DDC/CI 控制外接显示器的亮度与音量**。
 
-当前版本：**0.8.8 Preview**，仍在进行设备兼容性验证。
+当前版本：**0.8.19 Preview**，仍在进行设备兼容性验证。
 
 ## 1. 能力价值
 
@@ -30,11 +31,11 @@ DeviceBridge 是轻量的 macOS 原生菜单栏应用，提供无线外设电量
 
 <p align="center"><img src="./docs/assets/main-window.jpg" width="760" alt="DeviceBridge 0.8.2 主界面，显示无线键鼠电量与显示器亮度、音量控制"></p>
 
-**状态栏菜单：键鼠状态只读，显示器亮度与音量可直接调节。**
+**状态栏菜单：仅保留“显示主界面”和“退出程序”。以下为旧版菜单截图。**
 
 <p align="center"><img src="./docs/assets/status-menu.jpg" width="760" alt="DeviceBridge 状态栏设备菜单展开，包含键鼠电量及显示器亮度、音量滑块"></p>
 
-截图来自 0.8.2 的实际 AppKit 界面，设备和数值为文档演示数据。菜单使用同一套状态栏菜单，在预览窗口内展开以便完整截图；不表示已接入 macOS 原生控制中心。
+截图来自 0.8.2 的历史 AppKit 界面，设备和数值为文档演示数据；当前版本的设备列表和调节滑块仅在主界面显示。历史截图不表示已接入 macOS 原生控制中心。
 
 <details>
 <summary>查看宣传海报</summary>
@@ -72,15 +73,6 @@ DeviceBridge 是轻量的 macOS 原生菜单栏应用，提供无线外设电量
 | Logitech / 罗技 | **PRO X2 SUPERSTRIKE**，接收器 `046D:C54D` | 新增不依赖产品名的 HID++ 接收器识别入口；电量功能仍需实际探测与实机验证，尚不承诺兼容 |
 | Logitech / 罗技 | 部分支持 HID++ 2.0 电量功能 `0x1000 / 0x1004` 的键鼠 | 已实现通用探测，需逐设备验证 USB 接收器链路 |
 
-罗技其他在售系列（如 **PRO X SUPERLIGHT 2、G915 X LIGHTSPEED、G515 LIGHTSPEED、MX Master 4、MX Keys S**）作为通用 HID++ 路径的验证候选，未逐型号完成实机验证；接收器必须提供当前实现支持的电量与名称 / 类型功能。经典 G304 / G305 不等同于已实测的 G304 X。
-
-**同品牌或相近型号不代表兼容。** 迈从 G98 V3 当前未启用，其他迈从型号须逐接收器核对；共享 USB 标识的接收器也可能使用不同协议。已实测设备仍需进一步验证长期运行、休眠唤醒及不同固件的表现。
-
-新增型号按接收器 VID / PID、USB 接口或 HID 报文声明匹配，仅发送只读状态查询；休眠、无效或超时回复不伪造电量。上述预览适配已接入刷新和系统电量映射，并通过协议及路由测试，**仍需真实设备验证**。这是截至 2026-11-16 的实现范围，不是所有在售 2.4G 设备的全面兼容承诺。详细 USB ID、协议说明及未支持范围见 [2.4G 接收器适配说明](docs/WIRELESS-RECEIVERS.md)。
-
-**当前主要缺口**：Keychron Q / V / K Max、Ultra 和 HE 键盘的原厂 2.4G 电量能力不能从鼠标协议推定；已有部分型号研究表明原厂接收器不转发电量查询，因此本版未启用，也不以使用时长估算代替真实电量。Corsair K65 PLUS / K70 无线键盘，以及雷柏、达尔优、黑爵等尚无本版适配的型号，仍在待适配范围。参见 [2026 年 11 月覆盖与缺口](docs/WIRELESS-RECEIVERS.md)。
-
-适配细节：[AULA](docs/AULA.md) · [YJX / XUNSHE](docs/YJX-XUNSHE.md)。反馈兼容性问题时，请提供完整型号、接收器 VID / PID、macOS 版本及实际表现。
 
 ### 外接显示器
 
@@ -88,7 +80,25 @@ DeviceBridge 是轻量的 macOS 原生菜单栏应用，提供无线外设电量
 | --- | --- |
 | 支持通用 DDC 控制的显示器 | 按实际 VCP 响应分别探测亮度 `0x10`、音量 `0x62`；无需型号白名单，连接链路须支持 DDC |
 
-**macOS 原生控制中心滑块尚未接入。** 当前提供应用内硬件调节与系统媒体键转发；MacBook 还可跟随已有的内建屏幕亮度滑块。Mac mini 没有内建屏幕，不能通过此同步方式新增原生亮度滑块；HDMI 音频无可写音量属性时，也不会因 DDC 自动获得系统音量滑块。详见 [显示器能力与验证说明](docs/DISPLAYS.md)。
+状态栏菜单仅保留“显示主界面”和“退出程序”；亮度、音量调节集中在主界面，滑条随窗口宽度加长。
+
+当前本地构建缺少 Apple 授权的虚拟 HID 签名，因此亮度桥接开关置灰并显示原因；开启偏好不会被误报为系统亮度已接通，应用内 DDC 调节可独立使用。
+
+### 显示器独立桥接开关（0.8.19）
+
+显示器行分别提供“亮度桥接”和“音量桥接”，独立保存、独立生效。关闭亮度桥接不停止音频代理，关闭音量桥接不停止亮度控制。
+
+音量桥接仅在能唯一匹配在线 HDMI / DisplayPort 音频输出时可用；没有音频输出或同名多屏无法确定归属时置灰。不会仅凭 DDC 音量读数认为显示器具有音频。
+
+退出 DeviceBridge 时，先恢复物理音频输出，再从系统输出列表撤下 Proxy Audio Device；确认代理已消失后才完成退出。驱动保留安装，下次启动并启用音量桥接后重新注册。关闭所有音量桥接时也会撤下代理。恢复失败则暂缓退出，避免留下无效输出。强制结束进程无法保证执行清理。
+
+### 系统音量代理与原生亮度（0.8.19）
+
+首次打开应用会自动提示安装音量代理，无需寻找手动安装或“系统音量”按钮。已有 DeviceBridge 设置的升级用户同样会进入这项新功能的初始化流程。
+
+1. 在自动弹出的提示中选择“继续安装…”，按 macOS 提示进行管理员授权。安装会短暂重启音频服务，中断当前播放；已有驱动不会被覆盖。
+2. 安装完成后自动等待 Core Audio 加载，并连接当前显示器音频输出；多个显示器且当前输出无法确定时会弹出选择框。
+3. 播放声音，验证系统音量和静音。系统滑块调节软件音量，显示器 OSD 音量保持原值；OSD 音量为 0 时仍不会出声。
 
 
 ## 3. 系统要求
@@ -100,7 +110,7 @@ DeviceBridge 是轻量的 macOS 原生菜单栏应用，提供无线外设电量
 | 外设 | 上述 2.4G 键鼠，或启用 DDC/CI 且连接链路支持 DDC 的外接显示器 |
 | 权限 | 按系统提示允许输入监控；显示器媒体键转发需辅助功能权限；登录时启动可能需要批准登录项 |
 
-打开 `DeviceBridge-0.8.8-preview.dmg`，将应用拖入 **应用程序**，再从访达启动。需要授权时，前往 **系统设置 → 隐私与安全性 → 输入监控** 允许 DeviceBridge，并按提示退出重开；随后开启设备行右侧的 **映射开关**，即可尝试接入系统电池组件。
+打开 `DeviceBridge-0.8.19-preview.dmg`，将应用拖入 **应用程序**，再从访达启动。需要授权时，前往 **系统设置 → 隐私与安全性 → 输入监控** 允许 DeviceBridge，并按提示退出重开；随后开启设备行右侧的 **映射开关**，即可尝试接入系统电池组件。
 
 预览版使用 ad-hoc 本地签名，尚未经过 Apple 公证，首次启动或更新后可能需要系统确认或重新授权。无需关闭 SIP 或安装内核扩展。系统电量发布使用 IOKit 私有 SPI，后续 macOS 更新可能影响兼容性。
 
@@ -113,15 +123,7 @@ xattr -dr com.apple.quarantine "/Applications/DeviceBridge.app"
 open "/Applications/DeviceBridge.app"
 ```
 
-此命令仅移除 DeviceBridge 的下载隔离标记，无需每次到「隐私与安全性」手动允许打开。每次安装或更新后若再次出现同类提示，重新执行即可；若提示 `Permission denied` 或 `Operation not permitted`，将第一条改为 `sudo xattr -dr com.apple.quarantine "/Applications/DeviceBridge.app"`，按提示输入 Mac 管理员密码。若提示属性不存在，可直接执行第二条启动。辅助功能、输入监控等权限仍需首次手动授予。
-
-更名后应用安装为 `/Applications/DeviceBridge.app`，安装包使用 `DeviceBridge-版本-preview.dmg`。为兼容升级，保留原内部应用标识和设置目录，已有映射、上报周期及自启选择继续使用；旧名称安装副本在新应用启动时归档。
-
-源码仓库使用 `https://github.com/zjyg1993/devicebridge.git`。现有本地仓库可运行 `git remote set-url origin https://github.com/zjyg1993/devicebridge.git` 更新远程地址。
-
-从源码构建需安装 Xcode Command Line Tools：`./build.sh "$PWD/build.noindex"`。运行 `./release.sh` 打包，仅将最终 DMG 输出到 `release/`（Git 忽略），不额外输出独立 App；临时打包文件使用 `release.noindex/`。
-
-显示器请在 OSD 菜单中打开 **DDC/CI**，优先通过 HDMI / DisplayPort / USB-C 直连，点击“刷新全部”。有效读数出现后，设备行分别开放亮度和音量调节；开启该显示器的“媒体键与亮度同步”开关，再点击“授权快捷键…”允许辅助功能权限即可尝试使用媒体键。辅助功能已授权或媒体键监听已实际工作时，不再显示“授权快捷键…”；从系统设置返回时立即重新检测，撤销权限后按需重新显示。映射默认关闭，按显示器保存；关闭不影响应用内手动调节。显示器由自动发现维护，不提供右键删除，断开后保留状态。扫描不再清空设备行，暂时断开时保留“未连接”状态并禁用调节。部分 Mac HDMI 端口、扩展坞、KVM、DisplayLink 链路不透传 DDC；HDR 也可能锁定亮度。音量读取不可用时禁用音量滑块、音量键转发和静音转发，亮度独立判断。写入失败、回读失败或显示器未应用目标值时，停用对应功能；自动扫描不会解除写入失败状态，需点击刷新重新探测。扫描期间暂时禁用旧控件。读取失败显示不可用，不使用软件遮罩伪装硬件调节。
+显示器请在 OSD 菜单中打开 **DDC/CI**
 
 ## 4. 参考资料
 
@@ -146,8 +148,3 @@ open "/Applications/DeviceBridge.app"
 - [XUNSHE 官方网页驱动](https://xunshe.yjx2012.com/?productName=USB%20Receiver)
 - [YJX F0 主动电量查询实现](https://github.com/mimuruu/EWEADN-GS02-Pro-Control)
 - [YJX 不同固件报文记录](https://github.com/HeyOkay/HaloBattery/blob/main/docs/protocols.md)
-
-DeviceBridge 是独立项目，非上述品牌的官方驱动。
-
-
-权限排查：macOS 27 的“设备控制和数据访问”对应旧版辅助功能权限。0.8.3 使用独立后台队列查询 IOKit PostEvent 授权，已授予时隐藏快捷键授权按钮；有效撤销 / 移除授权时停用监听，不以缓存的旧状态反复重启。若设置开关已开启但当前进程仍无权限，预览版更新的 ad-hoc 签名可能需要重新绑定系统权限；可运行 `/Applications/DeviceBridge.app/Contents/MacOS/DeviceBridge --diagnose-permissions` 检查当前应用路径、版本及权限结果（`0` 已授予，`1` 拒绝，`2` 未确定）。

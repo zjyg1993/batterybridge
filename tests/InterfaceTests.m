@@ -150,21 +150,16 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     NSTimeInterval now=NSDate.date.timeIntervalSince1970;
     NSArray*fixtures=@[@{@"name":@"G304 X LIGHTSPEED",@"identity":@"test.mouse",@"category":@"Mouse",@"connected":@YES,@"fresh":@YES,@"percent":@94,@"charging":@NO,@"full":@NO,@"updated":@(now),@"mapped":@YES,@"published":@YES,@"status":@"已映射到系统电量",@"selectable":@YES},@{@"name":@"MCHOSE K87 V3",@"identity":@"test.keyboard",@"category":@"Keyboard",@"connected":@YES,@"fresh":@YES,@"percent":@92,@"charging":@NO,@"full":@NO,@"updated":@(now),@"mapped":@YES,@"published":@YES,@"status":@"已映射到系统电量",@"selectable":@YES}];
     BBApp*app=[BBApp new];app.engine=[BBEngine new];app.engine.snapshot=fixtures;app.statusMenu=[NSMenu new];app.statusMenu.autoenablesItems=NO;[app menuNeedsUpdate:app.statusMenu];
-    ensure(app.statusMenu.numberOfItems==fixtures.count+4,"status menu includes devices, section and two app commands");
-    for(NSMenuItem *item in app.statusMenu.itemArray)if([item.view isKindOfClass:BBStatusDeviceView.class]){
-        BBStatusDeviceView *view=(BBStatusDeviceView*)item.view;
-        ensure(view.sliders.count==0&&[view.batteryLabel.stringValue containsString:@"%"]&&![view.stateLabel.stringValue containsString:@"已连接"]&&view.batteryLabel.alignment==NSTextAlignmentCenter&&[view.batteryLabel isKindOfClass:BBMenuBatteryLabel.class]&&NSMinX(view.stateLabel.frame)>NSMaxX(view.batteryLabel.frame),"wireless devices only show battery status");
-        for(NSView *control in view.subviews)ensure(![control isKindOfClass:NSSlider.class]&&![control isKindOfClass:NSButton.class],"wireless menu row has no adjustable controls");
-    }
+    ensure(app.statusMenu.numberOfItems==2,"status menu contains only the two application commands");
     ensure([[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-2].title isEqual:@"显示主界面"]&&[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-2].action==@selector(showSettings:),"first command opens main window");
-    ensure([[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].title isEqual:@"退出 DeviceBridge"]&&[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].action==@selector(quit:)&&[[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].keyEquivalent isEqual:@"q"],"second command quits with keyboard shortcut");
+    ensure([[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].title isEqual:@"退出程序"]&&[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].action==@selector(quit:)&&[[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].keyEquivalent isEqual:@"q"],"second command quits with keyboard shortcut");
     NSMutableDictionary *offlineWireless=[fixtures[0] mutableCopy];offlineWireless[@"connected"]=@NO;offlineWireless[@"fresh"]=@NO;
     app.engine.snapshot=[fixtures arrayByAddingObject:offlineWireless];[app menuNeedsUpdate:app.statusMenu];
-    ensure(app.statusMenu.numberOfItems==fixtures.count+4,"disconnected wireless devices are omitted from menu");
-    app.engine.snapshot=@[offlineWireless,fixtures[1]];[app refreshStatusMenuViews];
-    ensure(app.statusMenu.numberOfItems==5,"wireless disconnection removes row while menu is open");
-    app.engine.snapshot=fixtures;[app refreshStatusMenuViews];
-    ensure(app.statusMenu.numberOfItems==fixtures.count+4,"wireless reconnection restores menu row");
+    ensure(app.statusMenu.numberOfItems==2,"disconnected wireless devices are omitted from menu");
+    app.engine.snapshot=@[offlineWireless,fixtures[1]];[app menuNeedsUpdate:app.statusMenu];
+    ensure(app.statusMenu.numberOfItems==2,"wireless disconnection does not add menu entries");
+    app.engine.snapshot=fixtures;[app menuNeedsUpdate:app.statusMenu];
+    ensure(app.statusMenu.numberOfItems==2,"wireless reconnection does not add menu entries");
     NSMenuItem*three=[NSMenuItem new];three.representedObject=@10800;[app changeInterval:three];ensure(BBInterval([BBPreferences() objectForKey:@"ReportInterval"])==10800,"interval menu saves three hours");
     NSMenuItem*mapping=[NSMenuItem new];mapping.representedObject=@"test.mouse";[app toggleMapping:mapping];ensure(mappingEnabled(@"test.mouse"),"mapping can be enabled");[app toggleMapping:mapping];ensure(!mappingEnabled(@"test.mouse"),"mapping can be disabled");
     ensure(![app applicationShouldTerminateAfterLastWindowClosed:NSApp],"closing window does not terminate app");
@@ -199,6 +194,7 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     [app buildWindow];
     BOOL hasListTitle=NO;for(NSView*v in app.devicesView.subviews)if([v isKindOfClass:NSTextField.class]&&[[(NSTextField*)v stringValue] isEqual:@"设备列表"])hasListTitle=YES;
     ensure(hasListTitle,"main window title uses device list wording");
+    for(NSView *view in app.settingsGroup.subviews)if([view isKindOfClass:NSTextField.class])ensure(![[(NSTextField*)view stringValue] isEqual:@"登录 Mac 后自动运行 DeviceBridge"],"login switch has no redundant description text");
     ensure(app.intervalPicker.numberOfItems==4,"main window offers four update intervals");
     [app.intervalPicker selectItemAtIndex:0];app.engine.forcePoll=NO;[app pickInterval:app.intervalPicker];
     ensure(BBInterval([BBPreferences() objectForKey:@"ReportInterval"])==1800&&app.engine.forcePoll,"interval change immediately requests a fresh reading");
@@ -209,17 +205,17 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     [app showWindow];[[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];ensure(app.window.visible,"main window can reopen after close");[app.window orderOut:nil];
     ensure([app.window.title containsString:Version],"window title exposes the running version");
     BBPermissionDisplayController *permissionDisplays=[BBPermissionDisplayController new];app.displays=permissionDisplays;
-    NSDictionary*displayFixture=@{@"identity":@"display:test",@"category":@"Display",@"connected":@YES,@"mappingEnabled":@YES,@"updated":@(now),@"name":@"DELL S2725QS",@"brightness":@{@"percent":@55},@"volume":@{@"percent":@20},@"status":@"DDC 已读取"};
+    NSDictionary*displayFixture=@{@"identity":@"display:test",@"category":@"Display",@"connected":@YES,@"mappingEnabled":@YES,@"brightnessBridgeEnabled":@YES,@"brightnessBridgeAvailable":@YES,@"volumeBridgeEnabled":@YES,@"audioOutputUID":@"test-hdmi",@"updated":@(now),@"name":@"DELL S2725QS",@"brightness":@{@"percent":@55},@"volume":@{@"percent":@20},@"status":@"DDC 已读取"};
     [app.displays setValue:@[displayFixture] forKey:@"snapshot"];app.devicesSignature=nil;[app refresh];
-    ensure(!app.authorizeButton.hidden&&[app.authorizeButton.title isEqual:@"授权快捷键…"],"ungranted media keys show authorization");
+    ensure(app.authorizeButton.hidden,"shortcut authorization uses first-launch onboarding without a manual button");
     permissionDisplays.listenGranted=YES;[app refresh];
-    ensure(!app.authorizeButton.hidden,"listen-only permission alone never falsely grants filtering access");
+    ensure(!permissionDisplays.mediaKeysAuthorized&&app.authorizeButton.hidden,"listen-only access does not grant shortcuts or restore a manual shortcut button");
     permissionDisplays.trusted=YES;[app refresh];
     ensure(app.authorizeButton.hidden,"granted Accessibility immediately hides shortcut authorization without a device change");
     permissionDisplays.trusted=NO;permissionDisplays.activeTap=YES;[app refresh];
     ensure(app.authorizeButton.hidden,"working filtering event tap hides redundant authorization");
     permissionDisplays.activeTap=NO;[app applicationDidBecomeActive:[NSNotification notificationWithName:NSApplicationDidBecomeActiveNotification object:NSApp]];
-    ensure(!app.authorizeButton.hidden,"returning to app detects revoked permission");
+    ensure(!permissionDisplays.mediaKeysAuthorized&&app.authorizeButton.hidden,"revoked permission stays detected without showing a manual shortcut button");
     permissionDisplays.trusted=YES;[app applicationDidBecomeActive:[NSNotification notificationWithName:NSApplicationDidBecomeActiveNotification object:NSApp]];
     ensure(app.authorizeButton.hidden,"returning from Settings detects newly granted permission");
     [permissionDisplays setValue:@YES forKey:@"permissionCheckComplete"];[permissionDisplays setValue:@0 forKey:@"deviceControlStatus"];permissionDisplays.trusted=NO;permissionDisplays.activeTap=NO;[app refresh];
@@ -229,43 +225,25 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     [permissionDisplays setValue:@2 forKey:@"deviceControlStatus"];[app refresh];
     ensure(app.authorizeButton.hidden,"unknown PostEvent state cannot override working shortcut access");
     permissionDisplays.trusted=NO;permissionDisplays.activeTap=NO;[app refresh];
-    ensure(!app.authorizeButton.hidden,"authorization returns when all shortcut access is unavailable");
+    ensure(!permissionDisplays.mediaKeysAuthorized&&app.authorizeButton.hidden,"unavailable shortcut permission never restores removed shortcut button");
     [permissionDisplays setValue:@NO forKey:@"permissionCheckComplete"];permissionDisplays.trusted=YES;permissionDisplays.activeTap=NO;
-    [app menuNeedsUpdate:app.statusMenu];BBStatusDeviceView *menuDisplay=nil;
-    ensure([[app.statusMenu itemAtIndex:0].title isEqual:@"显示器"]&&[[app.statusMenu itemAtIndex:2].title isEqual:@"2.4G 设备"],"status menu groups displays above wireless devices");
-    for(NSMenuItem *item in app.statusMenu.itemArray)if([item.view isKindOfClass:BBStatusDeviceView.class]&&[[(BBStatusDeviceView*)item.view record][@"category"] isEqual:@"Display"])menuDisplay=(BBStatusDeviceView*)item.view;
-    ensure(menuDisplay&&menuDisplay.sliders.count==2,"status menu exposes brightness and volume for each display");
-    NSMutableDictionary *menuRecord=[displayFixture mutableCopy];menuRecord[@"mappingEnabled"]=@NO;[menuDisplay updateRecord:menuRecord];
-    menuDisplay.sliders[0].doubleValue=72;[menuDisplay changeLevel:menuDisplay.sliders[0]];
-    menuDisplay.sliders[1].doubleValue=28;[menuDisplay changeLevel:menuDisplay.sliders[1]];
-    ensure(permissionDisplays.requests.count==2&&[permissionDisplays.requests[0][@"code"] intValue]==0x10&&[permissionDisplays.requests[1][@"code"] intValue]==0x62&&[permissionDisplays.requests[1][@"identity"] isEqual:@"display:test"],"menu sliders send the correct VCP and identity independently of mapping");
-    menuRecord[@"volumeError"]=@"不可用";[menuDisplay updateRecord:menuRecord];[menuDisplay changeLevel:menuDisplay.sliders[1]];
-    ensure(!menuDisplay.sliders[1].enabled&&menuDisplay.sliders[0].enabled&&permissionDisplays.requests.count==2,"unavailable volume cannot be changed from menu");
-    menuRecord[@"connected"]=@NO;[menuDisplay updateRecord:menuRecord];[menuDisplay changeLevel:menuDisplay.sliders[0]];
-    ensure(!menuDisplay.sliders[0].enabled&&permissionDisplays.requests.count==2,"offline display cannot be changed from menu");
-    [app menuWillOpen:app.statusMenu];
-    ensure(menuDisplay.sliders[0].enabled&&app.statusMenuTimer!=nil,"opening menu refreshes availability and starts tracking-mode updates");
-    menuDisplay.sliders[0].dragging=YES;menuDisplay.sliders[0].doubleValue=81;
-    [app refreshStatusMenuViews];ensure(menuDisplay.sliders[0].doubleValue==81,"live refresh never moves a thumb while dragging");menuDisplay.sliders[0].dragging=NO;
-    [app.displays setValue:@[] forKey:@"snapshot"];[app refreshStatusMenuViews];
-    ensure(!menuDisplay.sliders[0].enabled&&!menuDisplay.sliders[1].enabled,"unplugging display disables open menu controls in place");
-    [app.displays setValue:@[displayFixture] forKey:@"snapshot"];[app refreshStatusMenuViews];
-    ensure(menuDisplay.sliders[0].enabled&&menuDisplay.sliders[0].doubleValue==55,"confirmed hardware reading refreshes existing menu row");
-    NSMutableDictionary *newReading=[displayFixture mutableCopy];newReading[@"volume"]=@{@"percent":@38};
-    [app.displays setValue:@[newReading] forKey:@"snapshot"];
-    NSDate *trackingDeadline=[NSDate dateWithTimeIntervalSinceNow:.4];
-    while(trackingDeadline.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runMode:NSEventTrackingRunLoopMode beforeDate:trackingDeadline];
-    ensure(menuDisplay.sliders[1].doubleValue==38,"status refresh timer fires in actual menu event-tracking mode");
-    [app.displays setValue:@[displayFixture] forKey:@"snapshot"];
-    BBStatusDeviceView *staleMenu=[[BBStatusDeviceView alloc]initWithRecord:@{@"name":@"Mouse",@"connected":@YES,@"fresh":@NO,@"percent":@99} controller:nil];
-    ensure(![staleMenu.stateLabel.stringValue containsString:@"99"],"wireless menu never presents a stale percentage as current");
-    [app menuDidClose:app.statusMenu];ensure(!app.statusMenuTimer,"closing menu releases update timer");
+    [app menuNeedsUpdate:app.statusMenu];
+    ensure(app.statusMenu.numberOfItems==2,"display discovery does not add device sections to menu");
     NSUInteger displayRows=0;for(NSView*v in app.displayGroup.subviews)if([v isKindOfClass:BBDisplayRow.class]){
         displayRows++;BBDisplayRow*r=(BBDisplayRow*)v;NSMenu *injected=[NSMenu new];[injected addItemWithTitle:@"删除" action:NULL keyEquivalent:@""];r.menu=injected;
         ensure([r menuForEvent:rightClick]==nil,"display cannot be deleted through a context menu even if a menu is assigned");ensure(r.brightnessSlider.enabled&&r.volumeSlider.enabled,"display row exposes both detected controls");
         ensure(NSMaxX(r.volumeSlider.frame)<=NSMinX(r.mappingSwitch.frame),"display controls precede mapping switch");
         ensure(r.mappingSwitch.state==NSControlStateValueOn&&r.refreshButton.frame.origin.x==r.bounds.size.width-50,"display mapping and refresh align with wireless device rows");
     }
+    BBDisplayRow *audioRow=[[BBDisplayRow alloc]initWithFrame:NSMakeRect(0,0,640,96) record:displayFixture];
+    ensure(audioRow.brightnessBridgeSwitch!=audioRow.volumeBridgeSwitch&&audioRow.volumeBridgeSwitch.enabled,"brightness and audio have separate usable switches");
+    NSMutableDictionary *silentRecord=[displayFixture mutableCopy];[silentRecord removeObjectForKey:@"audioOutputUID"];
+    BBDisplayRow *silentRow=[[BBDisplayRow alloc]initWithFrame:NSMakeRect(0,0,640,96) record:silentRecord];
+    ensure(!silentRow.volumeBridgeSwitch.enabled&&silentRow.volumeBridgeSwitch.state==NSControlStateValueOff&&silentRow.brightnessBridgeSwitch.enabled,"non-audio monitor disables only volume bridge, even with DDC volume metadata");
+    NSMutableDictionary *unsignedRecord=[displayFixture mutableCopy];unsignedRecord[@"brightnessBridgeAvailable"]=@NO;
+    BBDisplayRow *unsignedRow=[[BBDisplayRow alloc]initWithFrame:NSMakeRect(0,0,640,96) record:unsignedRecord];
+    ensure(!unsignedRow.brightnessBridgeSwitch.enabled&&unsignedRow.brightnessBridgeSwitch.state==NSControlStateValueOff&&unsignedRow.brightnessSlider.enabled&&unsignedRow.volumeBridgeSwitch.enabled,"missing HID signing disables only native brightness bridge and never presents an enabled bridge");
+    ensure(audioRow.brightnessSlider.frame.size.width>=140&&audioRow.volumeSlider.frame.size.width==audioRow.brightnessSlider.frame.size.width,"both hardware control tracks are enlarged equally");
     ensure(displayRows==1,"display discovered alongside wireless receivers");
     ensure(app.displayGroup.groupHeight==96&&app.wirelessGroup.groupHeight==fixtures.count*96,"each category has its own grouped rows");
     ensure(NSMaxY(app.displayGroup.frame)<NSMinY(app.wirelessHeading.frame)&&NSMaxY(app.wirelessGroup.frame)<NSMinY(app.generalHeading.frame),"displays precede wireless devices and general settings");
@@ -282,6 +260,10 @@ int main(int argc,const char*argv[]){@autoreleasepool{
         }
     }
     app.displays=nil;app.devicesSignature=nil;[app refresh];
+    for(NSView *view in app.devicesView.subviews)if([view isKindOfClass:NSButton.class]){
+        NSString *title=[(NSButton*)view title];
+        ensure(![title containsString:@"系统音量"]&&![title containsString:@"手动安装"],"main window has no manual audio installation buttons");
+    }
     ensure((app.window.styleMask&NSWindowStyleMaskResizable)!=0,"window allows both dimensions to resize");
     NSMutableArray*many=[fixtures mutableCopy];for(int i=0;i<7;i++)[many addObject:fixtures[i%2]];app.engine.snapshot=many;
     for(NSNumber*legacy in @[@YES,@NO]){

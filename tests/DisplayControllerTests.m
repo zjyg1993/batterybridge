@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import "Display.h"
-@interface BBFakeDDC:NSObject
+#import "NativeBrightnessBridge.h"
+@interface BBFakeDDC:NSObject<DBBrightnessTransport>
 @property NSDictionary*identity;
 @property int writes;
 @property uint16_t value;
@@ -8,10 +9,14 @@
 @property BOOL ignoreWrite;
 @property BOOL noVolume;
 @property BOOL failedWrite;
+@property NSData *nativeEDID;
+@property NSData *factoryEDID;
 - (NSDictionary*)read:(uint8_t)code;
 - (BOOL)write:(uint8_t)code value:(uint16_t)value;
 @end
 @implementation BBFakeDDC
+- (NSData*)brightnessEDID {return _nativeEDID;}
+- (IOReturn)setBrightnessEDID:(NSData*)edid {_nativeEDID=edid?:_factoryEDID;return kIOReturnSuccess;}
 - (NSDictionary*)read:(uint8_t)code {return (_failedRead||(_noVolume&&code==0x62))?nil:@{@"current":@(_value),@"maximum":@255,@"percent":@(100.0*_value/255)};}
 - (BOOL)write:(uint8_t)code value:(uint16_t)value {_writes++;if(_failedWrite)return NO;if(!_ignoreWrite)_value=value;return YES;}
 @end
@@ -22,6 +27,7 @@
 - (instancetype)init {if((self=[super init]))_values=[NSMutableDictionary new];return self;}
 - (id)objectForKey:(NSString*)key {return _values[key];}
 - (void)setObject:(id)value forKey:(NSString*)key {_values[key]=value;}
+- (BOOL)synchronize {return YES;}
 @end
 @interface BBQuietDisplayController:BBDisplayController
 @property NSArray*fixtureScreens;
@@ -35,6 +41,7 @@
 @implementation BBQuietDisplayController
 - (NSArray*)connectedScreens {return _fixtureScreens?:@[];}
 - (NSArray*)displayChannels {return _fixtureChannels?:@[];}
+- (NSArray*)audioOutputs {return @[];}
 - (void)showHUD:(NSString*)name feature:(NSString*)feature percent:(double)percent {}
 @end
 @interface BBPermissionProbe:BBDisplayController
@@ -49,6 +56,33 @@
 - (BOOL)accessibilityAuthorized {return NO;}
 - (BOOL)hasActiveMediaKeyTap {return NO;}
 - (void)updateSystemControls {} // Never installs a real event tap during tests.
+@end
+@interface BBFixtureBrightnessEndpoint:NSObject<DBBrightnessEndpoint>
+@property(copy) void(^handler)(double);
+@property BOOL stopped;
+@end
+@implementation BBFixtureBrightnessEndpoint
+- (BOOL)startWithContainer:(NSString*)uuid name:(NSString*)name percent:(double)percent handler:(void(^)(double))handler error:(NSError**)error {_handler=[handler copy];return YES;}
+- (void)setConfirmedPercent:(double)percent {}
+- (void)stop {_stopped=YES;_handler=nil;}
+@end
+@interface BBFixtureBrightnessBinding:DBNativeBrightnessBinding
+@end
+@implementation BBFixtureBrightnessBinding
+- (NSDictionary*)systemCapability {return @{@"available":@YES};}
+- (NSTimeInterval)verificationDelay {return .01;}
+@end
+@interface BBNativeDisplayFixture:BBQuietDisplayController
+@property BBFixtureBrightnessEndpoint *nativeEndpoint;
+@property BOOL denyEntitlement;
+@property NSUserDefaults *testPreferences;
+@end
+@implementation BBNativeDisplayFixture
+- (BOOL)nativeBrightnessEntitled {return !self.denyEntitlement;}
+- (DBNativeBrightnessBinding*)newNativeBinding:(NSDictionary*)record {
+    self.nativeEndpoint=[BBFixtureBrightnessEndpoint new];
+    return [[BBFixtureBrightnessBinding alloc]initWithIdentity:record[@"identity"] displayID:[record[@"displayID"] unsignedIntValue] name:record[@"name"] preferences:_testPreferences queue:[self valueForKey:@"queue"] endpoint:_nativeEndpoint];
+}
 @end
 static void check(BOOL ok,const char*message){if(!ok){fprintf(stderr,"FAIL: %s\n",message);exit(1);}}
 static void settle(void){[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.25]];}
@@ -154,5 +188,47 @@ int main(void){@autoreleasepool{
     [probe authorizeMediaKeys];settle();
     check(probe.settingsOpened==1&&probe.accessRequested==1,"granted authorization does not reopen Settings or request again");
     [probe setValue:@NO forKey:@"running"];
+    BBMemoryDisplayDefaults *firstLaunchDefaults=[BBMemoryDisplayDefaults new];
+    BBPermissionProbe *firstLaunch=[[BBPermissionProbe alloc]initWithDefaults:firstLaunchDefaults];[firstLaunch setValue:@YES forKey:@"running"];firstLaunch.permissionFixture=1;
+    [firstLaunch beginMediaKeyOnboarding];[firstLaunch beginMediaKeyOnboarding];settle();settle();
+    check(firstLaunch.accessRequested==1&&firstLaunch.settingsOpened==0,"first launch requests shortcut permission once without forcing Settings open");
+    [firstLaunch beginMediaKeyOnboarding];settle();check(firstLaunch.accessRequested==1,"refreshes cannot repeat first-launch system prompt");
+    BBPermissionProbe *nextLaunch=[[BBPermissionProbe alloc]initWithDefaults:firstLaunchDefaults];[nextLaunch setValue:@YES forKey:@"running"];nextLaunch.permissionFixture=1;[nextLaunch beginMediaKeyOnboarding];settle();
+    check(nextLaunch.accessRequested==0,"same build remembers the first-launch request across app launches");
+    BBPermissionProbe *alreadyGranted=[[BBPermissionProbe alloc]initWithDefaults:[BBMemoryDisplayDefaults new]];[alreadyGranted setValue:@YES forKey:@"running"];alreadyGranted.permissionFixture=0;[alreadyGranted beginMediaKeyOnboarding];settle();
+    check(alreadyGranted.accessRequested==0,"already granted shortcut permission causes no startup prompt");
+    BBPermissionProbe *readOnly=[[BBPermissionProbe alloc]initWithDefaults:[BBMemoryDisplayDefaults new]];[readOnly setValue:@YES forKey:@"running"];[readOnly setValue:@YES forKey:@"readOnly"];readOnly.permissionFixture=1;[readOnly beginMediaKeyOnboarding];settle();
+    check(readOnly.accessRequested==0,"read-only diagnostics never request shortcut permission");
+    for(BBPermissionProbe *fixture in @[firstLaunch,nextLaunch,alreadyGranted,readOnly])[fixture setValue:@NO forKey:@"running"];
+    BBMemoryDisplayDefaults *nativeDefaults=[BBMemoryDisplayDefaults new];[nativeDefaults setObject:@{@"display:native":@YES} forKey:@"MappedDisplays"];
+    BBNativeDisplayFixture *nativeController=[[BBNativeDisplayFixture alloc]initWithDefaults:nativeDefaults];nativeController.testPreferences=nativeDefaults;[nativeController setValue:@YES forKey:@"running"];
+    uint8_t rawEDID[128]={0,255,255,255,255,255,255,0};rawEDID[8]=0x10;rawEDID[9]=0xac;rawEDID[10]=7;rawEDID[12]=42;uint8_t sum=0;for(int i=0;i<127;i++)sum+=rawEDID[i];rawEDID[127]=-sum;
+    NSData *nativeEDID=[NSData dataWithBytes:rawEDID length:128];BBFakeDDC *nativeBus=[BBFakeDDC new];nativeBus.value=128;nativeBus.identity=@{@"vendor":@0x10ac,@"product":@7,@"serial":@42};nativeBus.nativeEDID=nativeBus.factoryEDID=nativeEDID;
+    nativeController.fixtureChannels=@[nativeBus];nativeController.fixtureScreens=@[@{@"identity":@"display:native",@"displayID":@999,@"name":@"Test Monitor",@"vendor":@0x10ac,@"product":@7,@"serial":@42}];
+    [nativeController rescan];settle();settle();
+    check([nativeController.snapshot.firstObject[@"nativeBrightness"][@"available"] boolValue],"native brightness binding integrates with discovered mapped DDC display");
+    nativeController.nativeEndpoint.handler(40);settle();settle();
+    check(nativeBus.writes==1&&nativeBus.value==102&&[nativeController.snapshot.firstObject[@"nativeBrightness"][@"hardwareWriteConfirmed"] boolValue],"system HID request flows through actual DDC queue, write coalescing and readback acknowledgment");
+    __block BOOL nativeRestored=NO;[nativeController prepareForTermination:^(BOOL restored){nativeRestored=restored;}];settle();
+    check(nativeRestored&&[nativeBus.nativeEDID isEqual:nativeEDID]&&nativeController.nativeEndpoint.stopped,"app termination waits for native HID removal and EDID restoration");
+    [nativeController setValue:@NO forKey:@"running"];
+    BBNativeDisplayFixture *unsignedController=[[BBNativeDisplayFixture alloc]initWithDefaults:nativeDefaults];
+    unsignedController.denyEntitlement=YES;unsignedController.testPreferences=nativeDefaults;
+    unsignedController.fixtureChannels=@[nativeBus];unsignedController.fixtureScreens=nativeController.fixtureScreens;
+    [unsignedController setValue:@YES forKey:@"running"];[unsignedController rescan];settle();settle();
+    NSDictionary *unsignedState=unsignedController.snapshot.firstObject;
+    check(![unsignedState[@"brightnessBridgeAvailable"] boolValue]&&![unsignedState[@"brightnessBridgeEnabled"] boolValue]&&[unsignedState[@"mappingEnabled"] boolValue],"unsigned build reports unavailable bridge while preserving the saved request");
+    check(!unsignedController.nativeEndpoint&&[nativeBus.nativeEDID isEqual:nativeEDID]&&[unsignedState[@"nativeBrightness"][@"reason"] length]>0,"missing HID entitlement prevents endpoint creation and EDID mutation and publishes the cause");
+    [unsignedController setValue:@NO forKey:@"running"];
+    BBMemoryDisplayDefaults *splitDefaults=[BBMemoryDisplayDefaults new];[splitDefaults setObject:@{@"display:split":@YES} forKey:@"MappedDisplays"];
+    BBQuietDisplayController *split=[[BBQuietDisplayController alloc]initWithDefaults:splitDefaults];[split setValue:@YES forKey:@"running"];
+    [split setValue:@[@{@"identity":@"display:split",@"connected":@YES,@"audioOutputUID":@"hdmi"}] forKey:@"snapshot"];
+    [split setVolumeBridgeEnabled:NO identity:@"display:split"];
+    check([split mappingEnabledForIdentity:@"display:split"]&&![split volumeBridgeEnabledForIdentity:@"display:split"],"volume switch never disables brightness mapping");
+    [split setMappingEnabled:NO identity:@"display:split"];[split setVolumeBridgeEnabled:YES identity:@"display:split"];
+    check(![split mappingEnabledForIdentity:@"display:split"]&&[split volumeBridgeEnabledForIdentity:@"display:split"],"brightness switch never disables volume bridge");
+    BBQuietDisplayController *persisted=[[BBQuietDisplayController alloc]initWithDefaults:splitDefaults];
+    check(![persisted mappingEnabledForIdentity:@"display:split"]&&[persisted volumeBridgeEnabledForIdentity:@"display:split"],"independent bridge states persist across controller creation");
+    [split setValue:@NO forKey:@"running"];
     puts("Display controller tests passed");return 0;
 }}
