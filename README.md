@@ -6,7 +6,7 @@
 
 在 Mac 上查看 **USB 2.4G 无线键鼠电量**，并通过 **DDC/CI 控制外接显示器的亮度与音量**。
 
-当前版本：**0.8.6 Preview**，仍在进行设备兼容性验证。
+当前版本：**0.8.7 Preview**，仍在进行设备兼容性验证。
 
 ## 1. 能力价值
 
@@ -86,8 +86,7 @@ DeviceBridge 是轻量的 macOS 原生菜单栏应用，提供无线外设电量
 
 | 设备 | 支持状态 |
 | --- | --- |
-| **Dell S2725QS** | 用户已验证应用内亮度 `0x10` 和音量 `0x62` 控制；映射、插拔及唤醒持续验证中 |
-| 通用 DDC/CI 显示器（不限品牌） | 按实际 VCP 响应分别探测亮度 `0x10`、音量 `0x62`；无需型号白名单，连接链路须支持 DDC |
+| 支持通用 DDC 控制的显示器 | 按实际 VCP 响应分别探测亮度 `0x10`、音量 `0x62`；无需型号白名单，连接链路须支持 DDC |
 
 **macOS 原生控制中心滑块尚未接入。** 当前提供应用内硬件调节与系统媒体键转发；MacBook 还可跟随已有的内建屏幕亮度滑块。Mac mini 没有内建屏幕，不能通过此同步方式新增原生亮度滑块；HDMI 音频无可写音量属性时，也不会因 DDC 自动获得系统音量滑块。详见 [显示器能力与验证说明](docs/DISPLAYS.md)。
 
@@ -101,9 +100,20 @@ DeviceBridge 是轻量的 macOS 原生菜单栏应用，提供无线外设电量
 | 外设 | 上述 2.4G 键鼠，或启用 DDC/CI 且连接链路支持 DDC 的外接显示器 |
 | 权限 | 按系统提示允许输入监控；显示器媒体键转发需辅助功能权限；登录时启动可能需要批准登录项 |
 
-打开 `DeviceBridge-0.8.6-preview.dmg`，将应用拖入 **应用程序**，再从访达启动。需要授权时，前往 **系统设置 → 隐私与安全性 → 输入监控** 允许 DeviceBridge，并按提示退出重开；随后开启设备行右侧的 **映射开关**，即可尝试接入系统电池组件。
+打开 `DeviceBridge-0.8.7-preview.dmg`，将应用拖入 **应用程序**，再从访达启动。需要授权时，前往 **系统设置 → 隐私与安全性 → 输入监控** 允许 DeviceBridge，并按提示退出重开；随后开启设备行右侧的 **映射开关**，即可尝试接入系统电池组件。
 
 预览版使用 ad-hoc 本地签名，尚未经过 Apple 公证，首次启动或更新后可能需要系统确认或重新授权。无需关闭 SIP 或安装内核扩展。系统电量发布使用 IOKit 私有 SPI，后续 macOS 更新可能影响兼容性。
+
+### 首次安装或更新后的快捷启动命令
+
+将 App 拖入「应用程序」后，如果 macOS 提示「无法验证开发者」或因下载隔离而阻止打开，确认安装包来源可信后，在「终端」执行：
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/DeviceBridge.app"
+open "/Applications/DeviceBridge.app"
+```
+
+此命令仅移除 DeviceBridge 的下载隔离标记，无需每次到「隐私与安全性」手动允许打开。每次安装或更新后若再次出现同类提示，重新执行即可；若提示 `Permission denied` 或 `Operation not permitted`，将第一条改为 `sudo xattr -dr com.apple.quarantine "/Applications/DeviceBridge.app"`，按提示输入 Mac 管理员密码。若提示属性不存在，可直接执行第二条启动。辅助功能、输入监控等权限仍需首次手动授予。
 
 更名后应用安装为 `/Applications/DeviceBridge.app`，安装包使用 `DeviceBridge-版本-preview.dmg`。为兼容升级，保留原内部应用标识和设置目录，已有映射、上报周期及自启选择继续使用；旧名称安装副本在新应用启动时归档。
 
@@ -115,7 +125,6 @@ DeviceBridge 是轻量的 macOS 原生菜单栏应用，提供无线外设电量
 
 ## 4. 参考资料
 
-- [Dell S2725QS 官方手册入口](https://www.dell.com/support/product-details/en-us/product/s2725qs-monitor/resources/manuals)
 - [ddcutil MCCS / VCP 功能说明](https://www.ddcutil.com/vcpinfo_output/)
 - [MonitorControl：Apple Silicon DDC 实现与兼容性](https://github.com/MonitorControl/MonitorControl)
 - [m1ddc：IOAVService DDC 工具](https://github.com/waydabber/m1ddc)

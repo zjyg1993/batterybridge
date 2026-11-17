@@ -153,11 +153,18 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     ensure(app.statusMenu.numberOfItems==fixtures.count+4,"status menu includes devices, section and two app commands");
     for(NSMenuItem *item in app.statusMenu.itemArray)if([item.view isKindOfClass:BBStatusDeviceView.class]){
         BBStatusDeviceView *view=(BBStatusDeviceView*)item.view;
-        ensure(view.sliders.count==0&&[view.stateLabel.stringValue containsString:@"%"],"wireless devices only show battery status");
+        ensure(view.sliders.count==0&&[view.batteryLabel.stringValue containsString:@"%"]&&![view.stateLabel.stringValue containsString:@"已连接"]&&view.batteryLabel.alignment==NSTextAlignmentRight,"wireless devices only show battery status");
         for(NSView *control in view.subviews)ensure(![control isKindOfClass:NSSlider.class]&&![control isKindOfClass:NSButton.class],"wireless menu row has no adjustable controls");
     }
     ensure([[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-2].title isEqual:@"显示主界面"]&&[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-2].action==@selector(showSettings:),"first command opens main window");
     ensure([[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].title isEqual:@"退出 DeviceBridge"]&&[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].action==@selector(quit:)&&[[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-1].keyEquivalent isEqual:@"q"],"second command quits with keyboard shortcut");
+    NSMutableDictionary *offlineWireless=[fixtures[0] mutableCopy];offlineWireless[@"connected"]=@NO;offlineWireless[@"fresh"]=@NO;
+    app.engine.snapshot=[fixtures arrayByAddingObject:offlineWireless];[app menuNeedsUpdate:app.statusMenu];
+    ensure(app.statusMenu.numberOfItems==fixtures.count+4,"disconnected wireless devices are omitted from menu");
+    app.engine.snapshot=@[offlineWireless,fixtures[1]];[app refreshStatusMenuViews];
+    ensure(app.statusMenu.numberOfItems==5,"wireless disconnection removes row while menu is open");
+    app.engine.snapshot=fixtures;[app refreshStatusMenuViews];
+    ensure(app.statusMenu.numberOfItems==fixtures.count+4,"wireless reconnection restores menu row");
     NSMenuItem*three=[NSMenuItem new];three.representedObject=@10800;[app changeInterval:three];ensure(BBInterval([BBPreferences() objectForKey:@"ReportInterval"])==10800,"interval menu saves three hours");
     NSMenuItem*mapping=[NSMenuItem new];mapping.representedObject=@"test.mouse";[app toggleMapping:mapping];ensure(mappingEnabled(@"test.mouse"),"mapping can be enabled");[app toggleMapping:mapping];ensure(!mappingEnabled(@"test.mouse"),"mapping can be disabled");
     ensure(![app applicationShouldTerminateAfterLastWindowClosed:NSApp],"closing window does not terminate app");
