@@ -153,7 +153,7 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     ensure(app.statusMenu.numberOfItems==fixtures.count+4,"status menu includes devices, section and two app commands");
     for(NSMenuItem *item in app.statusMenu.itemArray)if([item.view isKindOfClass:BBStatusDeviceView.class]){
         BBStatusDeviceView *view=(BBStatusDeviceView*)item.view;
-        ensure(view.sliders.count==0&&[view.batteryLabel.stringValue containsString:@"%"]&&![view.stateLabel.stringValue containsString:@"已连接"]&&view.batteryLabel.alignment==NSTextAlignmentRight,"wireless devices only show battery status");
+        ensure(view.sliders.count==0&&[view.batteryLabel.stringValue containsString:@"%"]&&![view.stateLabel.stringValue containsString:@"已连接"]&&view.batteryLabel.alignment==NSTextAlignmentCenter&&[view.batteryLabel isKindOfClass:BBMenuBatteryLabel.class]&&NSMinX(view.stateLabel.frame)>NSMaxX(view.batteryLabel.frame),"wireless devices only show battery status");
         for(NSView *control in view.subviews)ensure(![control isKindOfClass:NSSlider.class]&&![control isKindOfClass:NSButton.class],"wireless menu row has no adjustable controls");
     }
     ensure([[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-2].title isEqual:@"显示主界面"]&&[app.statusMenu itemAtIndex:app.statusMenu.numberOfItems-2].action==@selector(showSettings:),"first command opens main window");
