@@ -141,14 +141,32 @@ static NSString *const DBPreviousOutputPreference=@"NativeAudioPreviousOutputUID
 }
 - (void)prepareForTermination:(void(^)(BOOL))completion {
     _stopped=YES;[_loadTimer invalidate];_loadTimer=nil;[_monitor invalidate];_monitor=nil;
-    NSError *error=nil;if(![self withdrawProxy:&error]){_stopped=NO;NSLog(@"Native audio exit recovery failed: %@",error);if(completion)completion(NO);return;}
-    if(![_backend respondsToSelector:@selector(setProxyPublished:error:)]){_terminationPrepared=YES;if(completion)completion(YES);return;}
-    // HAL removes the endpoint asynchronously after Box.Acquired changes.
     NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:3];
-    [NSTimer scheduledTimerWithTimeInterval:.1 repeats:YES block:^(NSTimer *tick){
-        BOOL present=NO;for(NSDictionary *row in [self.backend outputs])if([row[@"uid"] isEqual:@"ProxyAudioDevice_UID"]){present=YES;break;}
-        if(!present||deadline.timeIntervalSinceNow<=0){[tick invalidate];self.terminationPrepared=!present;if(present)self.stopped=NO;if(completion)completion(!present);}
+    __block BOOL withdrawn=NO;
+    NSTimer *timer=[NSTimer timerWithTimeInterval:.1 repeats:YES block:^(NSTimer *tick){
+        // Retry transient Core Audio errors within this quit request. After a
+        // successful write, HAL still needs time to remove the endpoint.
+        NSError *error=nil;
+        if(!withdrawn)withdrawn=[self withdrawProxy:&error];
+        BOOL present=NO;
+        if(withdrawn&&[self.backend respondsToSelector:@selector(setProxyPublished:error:)]){
+            for(NSDictionary *row in [self.backend outputs]){
+                if([row[@"uid"] isEqual:@"ProxyAudioDevice_UID"]){present=YES;break;}
+            }
+        }
+        BOOL restored=withdrawn&&!present;
+        if(restored||deadline.timeIntervalSinceNow<=0){
+            [tick invalidate];
+            self.terminationPrepared=restored;
+            if(!restored){
+                self.stopped=NO;
+                NSLog(@"Native audio exit recovery failed: %@",error.localizedDescription?:@"proxy is still present");
+            }
+            if(completion)completion(restored);
+        }
     }];
+    [NSRunLoop.mainRunLoop addTimer:timer forMode:NSDefaultRunLoopMode];
+    [NSRunLoop.mainRunLoop addTimer:timer forMode:NSModalPanelRunLoopMode];
 }
 - (void)stop {
     _stopped=YES;[_loadTimer invalidate];_loadTimer=nil;[_monitor invalidate];_monitor=nil;

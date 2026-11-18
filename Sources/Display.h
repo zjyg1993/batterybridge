@@ -21,11 +21,12 @@
 - (void)authorizeMediaKeys;
 - (void)refreshMediaKeyAuthorization;
 - (void)setPercent:(double)percent code:(uint8_t)code identity:(NSString*)identity;
+- (NSNumber*)pendingBrightnessForIdentity:(NSString*)identity;
 @end
 
 @interface BBDisplayRow : NSView
 @property NSDictionary *record;
-@property(weak) BBDisplayController *controller;
+@property(nonatomic,weak) BBDisplayController *controller;
 @property NSSlider *brightnessSlider;
 @property NSSlider *volumeSlider;
 @property NSSwitch *mappingSwitch; // compatibility alias for brightness switch
@@ -33,5 +34,6 @@
 @property NSSwitch *volumeBridgeSwitch;
 @property NSButton *refreshButton;
 @property BOOL showsSeparator;
+@property(nonatomic,readonly,getter=isTrackingBrightness) BOOL trackingBrightness;
 - (instancetype)initWithFrame:(NSRect)frame record:(NSDictionary*)record;
 @end

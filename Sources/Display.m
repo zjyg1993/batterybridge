@@ -164,12 +164,23 @@ static NSString *BBDefaultDisplayAudioName(void) {
     CFStringRef name=NULL;size=sizeof name;if(AudioObjectGetPropertyData(device,&a,0,NULL,&size,&name)!=noErr)return nil;return CFBridgingRelease(name);
 }
 
+@interface BBBrightnessRequest : NSObject
+@property double percent;
+@property NSUInteger generation;
+@property BOOL scheduled;
+@property NSDictionary *readingBeforeFailure;
+@end
+@implementation BBBrightnessRequest
+@end
+
 @interface BBDisplayController ()
 @property(nonatomic,copy,readwrite) NSArray<NSDictionary*> *snapshot;
 @property dispatch_queue_t queue;
 @property NSMutableDictionary<NSString*,BBDDCChannel*>*channels;
 @property NSMutableDictionary<NSString*,NSMutableDictionary*>*records;
 @property NSMutableDictionary<NSString*,NSDictionary*>*pending;
+// Request replacement, scheduling, and failure handoff share this lock.
+@property NSMutableDictionary<NSString*,BBBrightnessRequest*>*brightnessRequests;
 @property NSMutableDictionary<NSString*,NSNumber*>*unmuted;
 @property NSMutableDictionary<NSString*,NSMutableDictionary*>*controlErrors;
 @property NSUserDefaults*preferences;
@@ -178,6 +189,8 @@ static NSString *BBDefaultDisplayAudioName(void) {
 @property NSTimer*discoveryTimer;
 @property NSTimer*systemTimer;
 @property BOOL scanning;
+@property BOOL periodicScan;
+@property BOOL periodicScanDeferred;
 @property BOOL readOnly;
 @property(nonatomic,readwrite) BOOL discoveryFinished;
 @property(atomic) BOOL running;
@@ -211,7 +224,7 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
 @implementation BBDisplayController
 - (instancetype)init {return [self initWithDefaults:NSUserDefaults.standardUserDefaults];}
 - (instancetype)initWithDefaults:(NSUserDefaults*)defaults {
-    if((self=[super init])){BBLoadDisplayAPIs();_snapshot=@[];_nativeMissingSince=[NSMutableDictionary new];_nativeBindings=[NSMutableDictionary new];_nativePendingRequests=[NSMutableDictionary new];_queue=dispatch_queue_create("local.devicebridge.ddc",DISPATCH_QUEUE_SERIAL);_channels=[NSMutableDictionary new];_records=[NSMutableDictionary new];_pending=[NSMutableDictionary new];_unmuted=[NSMutableDictionary new];_controlErrors=[NSMutableDictionary new];_consumedKeys=[NSMutableSet new];_nativeLevel=-1;_preferences=defaults;_permissionQueue=dispatch_queue_create("local.devicebridge.permissions",DISPATCH_QUEUE_SERIAL);_deviceControlStatus=kIOHIDAccessTypeUnknown;
+    if((self=[super init])){BBLoadDisplayAPIs();_snapshot=@[];_nativeMissingSince=[NSMutableDictionary new];_nativeBindings=[NSMutableDictionary new];_nativePendingRequests=[NSMutableDictionary new];_queue=dispatch_queue_create("local.devicebridge.ddc",DISPATCH_QUEUE_SERIAL);_channels=[NSMutableDictionary new];_records=[NSMutableDictionary new];_pending=[NSMutableDictionary new];_brightnessRequests=[NSMutableDictionary new];_unmuted=[NSMutableDictionary new];_controlErrors=[NSMutableDictionary new];_consumedKeys=[NSMutableSet new];_nativeLevel=-1;_preferences=defaults;_permissionQueue=dispatch_queue_create("local.devicebridge.permissions",DISPATCH_QUEUE_SERIAL);_deviceControlStatus=kIOHIDAccessTypeUnknown;
         id stored=[defaults objectForKey:@"BrightnessBridgeDisplays"]?:[defaults objectForKey:@"MappedDisplays"];id volume=[defaults objectForKey:@"VolumeBridgeDisplays"];_volumeChoices=[volume isKindOfClass:NSDictionary.class]?[volume mutableCopy]:[NSMutableDictionary new];_mappingChoices=[stored isKindOfClass:NSDictionary.class]?[stored mutableCopy]:[NSMutableDictionary new];
     }return self;
 }
@@ -321,6 +334,9 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
 }
 - (void)publish {[self publishForGeneration:self.generation];}
 - (void)publishForGeneration:(NSUInteger)generation {
+    [self publishForGeneration:generation manualRequest:nil identity:nil];
+}
+- (void)publishForGeneration:(NSUInteger)generation manualRequest:(BBBrightnessRequest*)request identity:(NSString*)identity {
     NSMutableArray*copies=[NSMutableArray new];for(NSDictionary*r in _records.allValues)[copies addObject:[r copy]];
     NSArray*rows=[copies sortedArrayUsingComparator:^NSComparisonResult(NSDictionary*a,NSDictionary*b){return [a[@"name"] compare:b[@"name"]];}];
     NSMutableDictionary *nativeCandidates=[NSMutableDictionary new];
@@ -332,6 +348,7 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
         }
     }
     dispatch_async(dispatch_get_main_queue(),^{if(self.running&&generation==self.generation){
+        if(request&&request!=[self brightnessRequestForIdentity:identity generation:generation])return;
         BOOL brightnessCapable=[self nativeBrightnessEntitled];
         NSMutableArray *published=[NSMutableArray new];
         for(NSDictionary *record in rows){
@@ -356,7 +373,7 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
     CGDisplayRegisterReconfigurationCallback(BBDisplayReconfigured,(__bridge void*)self);
     [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(woke:) name:NSWorkspaceDidWakeNotification object:nil];
     [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(woke:) name:NSWorkspaceScreensDidWakeNotification object:nil];
-    self.discoveryTimer=[NSTimer timerWithTimeInterval:30 target:self selector:@selector(rescan) userInfo:nil repeats:YES];
+    self.discoveryTimer=[NSTimer timerWithTimeInterval:30 target:self selector:@selector(rescanPeriodically:) userInfo:nil repeats:YES];
     [NSRunLoop.mainRunLoop addTimer:_discoveryTimer forMode:NSRunLoopCommonModes];
     if(!_readOnly){self.systemTimer=[NSTimer timerWithTimeInterval:.25 target:self selector:@selector(refreshMediaKeyAuthorization) userInfo:nil repeats:YES];[NSRunLoop.mainRunLoop addTimer:_systemTimer forMode:NSRunLoopCommonModes];}
     [self rescan];if(!_readOnly)[self updateSystemControls];
@@ -364,6 +381,7 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
 - (void)woke:(NSNotification*)n {_nativeSource=0;_nativeLevel=-1;[self rescan];}
 - (void)stop {
     if(!_running)return;[self prepareForTermination:nil];_running=NO;_generation++;[_discoveryTimer invalidate];[_systemTimer invalidate];[_hudTimer invalidate];[_hud orderOut:nil];
+    [self clearBrightnessRequests];
     if(!_readOnly){CGDisplayRemoveReconfigurationCallback(BBDisplayReconfigured,(__bridge void*)self);[NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];}
     if(_eventTap){CGEventTapEnable(_eventTap,false);CFRunLoopRemoveSource(CFRunLoopGetMain(),_eventSource,kCFRunLoopCommonModes);CFRelease(_eventSource);CFRelease(_eventTap);_eventSource=NULL;_eventTap=NULL;}
     dispatch_async(_queue,^{[self.pending removeAllObjects];[self.channels removeAllObjects];[self.records removeAllObjects];});self.snapshot=@[];
@@ -418,14 +436,28 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
 }
 - (void)rescan {
     if(!_running)return;
-    // Keep visible identities during discovery. Generation invalidates writes;
-    // presentation must not be emptied by the 30-second read-only refresh.
+    // Topology changes retire old channels and their pending writes.
     _generation++;self.discoveryFinished=NO;
+    _periodicScan=NO;_periodicScanDeferred=NO;
+    [self clearBrightnessRequests];
     NSMutableArray *busy=[NSMutableArray new];for(NSDictionary *row in _snapshot){NSMutableDictionary *copy=[row mutableCopy];copy[@"scanning"]=@YES;[busy addObject:copy];}self.snapshot=busy;
-    if(_scanning){_needsRescan=YES;return;}_scanning=YES;
+    if(_scanning){_needsRescan=YES;return;}
+    [self scanDisplaysPeriodically:NO];
+}
+- (void)rescanPeriodically:(NSTimer*)timer {
+    if(!_running||_scanning)return;
+    @synchronized(_brightnessRequests){
+        _periodicScanDeferred=_brightnessRequests.count>0;
+    }
+    if(!_periodicScanDeferred)[self scanDisplaysPeriodically:YES];
+}
+- (void)scanDisplaysPeriodically:(BOOL)periodic {
+    _scanning=YES;_periodicScan=periodic;self.discoveryFinished=NO;
     NSUInteger generation=_generation;NSArray*screens=[self connectedScreens];NSDictionary*choices=[_mappingChoices copy];
     dispatch_async(_queue,^{
-        [self.pending removeAllObjects];[self.channels removeAllObjects];
+        if(!periodic)[self.pending removeAllObjects];
+        NSDictionary *previousChannels=periodic?[self.channels copy]:nil;
+        [self.channels removeAllObjects];
         // Keep known rows even if enumeration is transiently empty. Old control
         // capabilities are removed, so a retained row never writes stale data.
         for(NSMutableDictionary*r in self.records.allValues){r[@"connected"]=@NO;r[@"status"]=@"显示器未连接 · 等待重新发现";[r removeObjectForKey:@"brightness"];[r removeObjectForKey:@"volume"];[r removeObjectForKey:@"audioOutputUID"];r[@"audioBridgeAvailable"]=@NO;}
@@ -451,6 +483,10 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
                 if(anonymous&&!locationConflict)channel=ports.firstObject;
             }
             if(channel){
+                BBDDCChannel *previous=previousChannels[s[@"identity"]];
+                if([previous isKindOfClass:BBDDCChannel.class]&&[channel isKindOfClass:BBDDCChannel.class]){
+                    channel.lastOperation=previous.lastOperation;
+                }
                 [used addObject:channel];self.channels[s[@"identity"]]=channel;
                 if([channel.identity[@"name"] length])r[@"name"]=channel.identity[@"name"];
                 for(NSNumber*code in @[@0x10,@0x62]){NSDictionary*v=[channel read:code.unsignedCharValue];if(v)r[code.intValue==0x10?@"brightness":@"volume"]=v;}
@@ -466,12 +502,13 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
         }
         [self publishForGeneration:generation];
         dispatch_async(dispatch_get_main_queue(),^{
-            self.scanning=NO;[self flushNativeBrightnessRequests];
+            self.scanning=NO;self.periodicScan=NO;[self flushNativeBrightnessRequests];
             if(self.needsRescan&&self.running){self.needsRescan=NO;[self rescan];}
         });
     });
 }
 - (void)enqueuePercent:(double)percent code:(uint8_t)code identity:(NSString*)identity generation:(NSUInteger)generation bridged:(BOOL)bridged {
+    if(code==0x10&&[self brightnessRequestForIdentity:identity generation:generation])return;
     NSString*key=[NSString stringWithFormat:@"%@/%u",identity,code];
     BOOL scheduled=self.pending[key]!=nil;self.pending[key]=@{@"percent":@(percent),@"generation":@(generation),@"bridged":@(bridged),@"identity":identity};
     if(scheduled)return;
@@ -479,37 +516,118 @@ static void BBDisplayReconfigured(CGDirectDisplayID display,CGDisplayChangeSumma
         NSDictionary*request=self.pending[key];[self.pending removeObjectForKey:key];
         if(!request||!self.running||[request[@"generation"] unsignedIntegerValue]!=self.generation)return;
         if([request[@"bridged"] boolValue]&&(code==0x10?![self.records[identity][@"mappingEnabled"] boolValue]:![self volumeBridgeEnabledForIdentity:identity]))return;
-        [self applyPercent:[request[@"percent"] doubleValue] code:code identity:identity];
+        [self applyPercent:[request[@"percent"] doubleValue] code:code identity:identity generation:[request[@"generation"] unsignedIntegerValue] manualRequest:nil];
     });
 }
 - (void)setPercent:(double)percent code:(uint8_t)code identity:(NSString*)identity {
-    if(_scanning||_readOnly||!_running||!isfinite(percent)||(code!=0x10&&code!=0x62)||!identity.length)return;
+    if((_scanning&&!_periodicScan)||_readOnly||!_running||!isfinite(percent)||(code!=0x10&&code!=0x62)||!identity.length)return;
     percent=fmax(0,fmin(100,percent));NSUInteger generation=_generation;
+    if(code==0x10){
+        BOOL alreadyScheduled;
+        @synchronized(_brightnessRequests){
+            BBBrightnessRequest *previous=_brightnessRequests[identity];
+            BOOL sameGeneration=previous&&previous.generation==generation;
+            if(sameGeneration&&previous.percent==percent)return;
+            alreadyScheduled=sameGeneration&&previous.scheduled;
+            BBBrightnessRequest *request=[BBBrightnessRequest new];
+            request.percent=percent;request.generation=generation;request.scheduled=YES;
+            if(sameGeneration)request.readingBeforeFailure=previous.readingBeforeFailure;
+            _brightnessRequests[identity]=request;
+        }
+        if(!alreadyScheduled)[self scheduleBrightnessForIdentity:identity generation:generation delay:40*NSEC_PER_MSEC];
+        return;
+    }
     dispatch_async(_queue,^{if(self.running&&generation==self.generation)[self enqueuePercent:percent code:code identity:identity generation:generation bridged:NO];});
 }
-- (void)applyPercent:(double)percent code:(uint8_t)code identity:(NSString*)identity {
-    if(_readOnly)return;NSUInteger generation=self.generation;
+- (void)clearBrightnessRequests {
+    @synchronized(_brightnessRequests){[_brightnessRequests removeAllObjects];}
+}
+- (BBBrightnessRequest*)brightnessRequestForIdentity:(NSString*)identity generation:(NSUInteger)generation {
+    if(!identity.length)return nil;
+    @synchronized(_brightnessRequests){
+        BBBrightnessRequest *request=_brightnessRequests[identity];
+        return request.generation==generation?request:nil;
+    }
+}
+- (NSNumber*)pendingBrightnessForIdentity:(NSString*)identity {
+    BBBrightnessRequest *request=[self brightnessRequestForIdentity:identity generation:self.generation];
+    return request?@(request.percent):nil;
+}
+- (void)scheduleBrightnessForIdentity:(NSString*)identity generation:(NSUInteger)generation delay:(int64_t)delay {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,delay),_queue,^{
+        BBBrightnessRequest *request=[self brightnessRequestForIdentity:identity generation:generation];
+        if(!request||!self.running||generation!=self.generation)return;
+        [self.pending removeObjectForKey:[NSString stringWithFormat:@"%@/%u",identity,0x10u]];
+        [self applyPercent:request.percent code:0x10 identity:identity generation:generation manualRequest:request];
+        BOOL newer;
+        @synchronized(self.brightnessRequests){
+            if(!self.running||generation!=self.generation)return;
+            newer=self.brightnessRequests[identity]!=request;
+            if(!newer)request.scheduled=NO;
+        }
+        if(newer){[self scheduleBrightnessForIdentity:identity generation:generation delay:0];return;}
+        // Retire the goal after the confirmed snapshot has reached the main
+        // queue. Hardware can continue processing while AppKit tracks a drag.
+        dispatch_async(dispatch_get_main_queue(),^{
+            if(!self.running||generation!=self.generation)return;
+            @synchronized(self.brightnessRequests){
+                if(self.brightnessRequests[identity]!=request)return;
+                [self.brightnessRequests removeObjectForKey:identity];
+            }
+            if(self.periodicScanDeferred)[self rescanPeriodically:nil];
+        });
+    });
+}
+- (void)applyPercent:(double)percent code:(uint8_t)code identity:(NSString*)identity generation:(NSUInteger)generation manualRequest:(BBBrightnessRequest*)request {
+    if(_readOnly||!self.running||generation!=self.generation)return;
+    if(code==0x10&&request!=[self brightnessRequestForIdentity:identity generation:generation])return;
     BBDDCChannel*c=_channels[identity];NSMutableDictionary*r=_records[identity];NSString*feature=code==0x10?@"brightness":@"volume";
-    NSDictionary*before=r[feature];if(!c||!BBDisplayControlAvailable(r,code)||![before[@"maximum"] unsignedIntValue])return;
+    // A drag received before an earlier failure reached the UI can still use
+    // that request's last known reading on the same display generation.
+    NSDictionary *before=r[feature]?:request.readingBeforeFailure;
+    if(!c||(!BBDisplayControlAvailable(r,code)&&!request.readingBeforeFailure)||![before[@"maximum"] unsignedIntValue])return;
     uint16_t value=(uint16_t)lround(percent*[before[@"maximum"] doubleValue]/100.0);
-    BOOL sent=[c write:code value:value];NSDictionary*after=sent?[c read:code]:nil;
-    BOOL verified=after&&abs([after[@"current"] intValue]-value)<=1;
+    BOOL sent=[c write:code value:value];
+    if(code==0x10&&request!=[self brightnessRequestForIdentity:identity generation:generation])return;
+    NSDictionary*after=sent?[c read:code]:nil;
+    // An adjacent reading can be the previous slider setting.
+    int tolerance=request?0:1;
+    BOOL verified=after&&abs([after[@"current"] intValue]-value)<=tolerance;
     // Some panels apply SET asynchronously. Retry readback once, never send a
     // second write merely because the first read returned the old value.
-    if(sent&&after&&!verified){usleep(100000);after=[c read:code];verified=after&&abs([after[@"current"] intValue]-value)<=1;}
-    if(verified){
-        r[feature]=after;r[@"status"]=@"DDC 调节已确认";r[@"updated"]=@(NSDate.date.timeIntervalSince1970);
-        NSString *name=r[@"name"];double confirmed=[after[@"percent"] doubleValue];
-        dispatch_async(dispatch_get_main_queue(),^{if(self.running&&self.generation==generation)[self showHUD:name feature:feature percent:confirmed];});
-    }else{
-        NSString *reason=after?@"显示器未应用目标值 · 请检查 HDR / 显示模式，刷新后重试":@"DDC 写入或回读失败 · 请刷新后重试";
-        if(!self.controlErrors[identity])self.controlErrors[identity]=[NSMutableDictionary new];
-        self.controlErrors[identity][feature]=reason;r[[feature stringByAppendingString:@"Error"]]=reason;
-        [r removeObjectForKey:feature];r[@"status"]=reason;
-        if(code==0x62)[self.unmuted removeObjectForKey:identity];
+    if(sent&&after&&!verified){
+        if(code==0x10&&request!=[self brightnessRequestForIdentity:identity generation:generation])return;
+        usleep(100000);after=[c read:code];
+        verified=after&&abs([after[@"current"] intValue]-value)<=tolerance;
     }
-    if(code==0x10)dispatch_async(dispatch_get_main_queue(),^{if(self.running&&self.generation==generation)[self.nativeBindings[identity] acknowledgePercent:verified?[after[@"percent"] doubleValue]:percent success:verified];});
-    [self publishForGeneration:generation];
+    @synchronized(_brightnessRequests){
+        if(generation!=self.generation||(code==0x10&&request!=_brightnessRequests[identity]))return;
+        if(verified){
+            if(request.readingBeforeFailure){
+                [r removeObjectForKey:@"brightnessError"];
+                [self.controlErrors[identity] removeObjectForKey:feature];
+            }
+            request.readingBeforeFailure=nil;
+            r[feature]=after;r[@"status"]=@"DDC 调节已确认";r[@"updated"]=@(NSDate.date.timeIntervalSince1970);
+        }else{
+            NSString *reason=after?@"显示器未应用目标值 · 请检查 HDR / 显示模式，刷新后重试":@"DDC 写入或回读失败 · 请刷新后重试";
+            if(!self.controlErrors[identity])self.controlErrors[identity]=[NSMutableDictionary new];
+            self.controlErrors[identity][feature]=reason;r[[feature stringByAppendingString:@"Error"]]=reason;
+            [r removeObjectForKey:feature];r[@"status"]=reason;
+            request.readingBeforeFailure=before;
+            if(code==0x62)[self.unmuted removeObjectForKey:identity];
+        }
+    }
+    if(verified){
+        NSString *name=r[@"name"];double confirmed=[after[@"percent"] doubleValue];
+        dispatch_async(dispatch_get_main_queue(),^{
+            if(self.running&&self.generation==generation&&(code!=0x10||request==[self brightnessRequestForIdentity:identity generation:generation]))[self showHUD:name feature:feature percent:confirmed];
+        });
+    }
+    if(code==0x10)dispatch_async(dispatch_get_main_queue(),^{
+        if(self.running&&self.generation==generation&&request==[self brightnessRequestForIdentity:identity generation:generation])[self.nativeBindings[identity] acknowledgePercent:verified?[after[@"percent"] doubleValue]:percent success:verified];
+    });
+    [self publishForGeneration:generation manualRequest:request identity:identity];
 }
 - (void)showHUD:(NSString*)name feature:(NSString*)feature percent:(double)percent {
     if(!_hud){self.hud=[[NSPanel alloc]initWithContentRect:NSMakeRect(0,0,310,64) styleMask:NSWindowStyleMaskBorderless|NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];_hud.level=NSStatusWindowLevel;_hud.ignoresMouseEvents=YES;_hud.backgroundColor=NSColor.windowBackgroundColor;_hud.hasShadow=YES;_hud.collectionBehavior=NSWindowCollectionBehaviorCanJoinAllSpaces|NSWindowCollectionBehaviorFullScreenAuxiliary;}
@@ -589,7 +707,22 @@ static CGEventRef BBDisplayKeyEvent(CGEventTapProxy proxy,CGEventType type,CGEve
 static NSTextField *BBDisplayLabel(NSString*text,NSRect frame,CGFloat size,NSColor*color) {
     NSTextField*l=[NSTextField labelWithString:text];l.frame=frame;l.font=[NSFont systemFontOfSize:size];l.textColor=color;l.lineBreakMode=NSLineBreakByTruncatingTail;return l;
 }
+@interface BBBrightnessSlider : NSSlider
+@property(nonatomic) BOOL tracking;
+@end
+@implementation BBBrightnessSlider
+- (void)mouseDown:(NSEvent*)event {
+    self.tracking=YES;
+    [super mouseDown:event];
+    self.tracking=NO;
+}
+@end
+
+@interface BBDisplayRow ()
+@property NSTextField *brightnessValueLabel;
+@end
 @implementation BBDisplayRow
+@synthesize controller=_controller;
 - (instancetype)initWithFrame:(NSRect)frame record:(NSDictionary*)record {
     if((self=[super initWithFrame:frame])){
         _record=record;CGFloat w=frame.size.width;CGFloat sliderWidth=MIN(220,MAX(110,w*.23)),sliderX=w-240-sliderWidth;BOOL connected=![record[@"connected"] isEqual:@NO];
@@ -604,9 +737,13 @@ static NSTextField *BBDisplayLabel(NSString*text,NSRect frame,CGFloat size,NSCol
         for(NSUInteger i=0;i<2;i++){
             NSString*f=i?@"volume":@"brightness";NSDictionary*v=record[f];CGFloat y=i?24:52;
             NSImageView*symbol=[[NSImageView alloc]initWithFrame:NSMakeRect(sliderX-20,y+2,16,16)];symbol.image=[NSImage imageWithSystemSymbolName:i?@"speaker.wave.2":@"sun.max" accessibilityDescription:i?@"音量":@"亮度"];symbol.contentTintColor=NSColor.secondaryLabelColor;[self addSubview:symbol];
-            NSSlider*slider=[NSSlider sliderWithValue:[v[@"percent"] doubleValue] minValue:0 maxValue:100 target:self action:i?@selector(volumeChanged:):@selector(brightnessChanged:)];slider.frame=NSMakeRect(sliderX,y,sliderWidth,20);slider.controlSize=NSControlSizeSmall;slider.enabled=BBDisplayControlAvailable(record,i?0x62:0x10);slider.continuous=NO;slider.accessibilityLabel=[NSString stringWithFormat:@"%@%@",name.stringValue,i?@"音量":@"亮度"];slider.toolTip=slider.enabled?slider.accessibilityLabel:(record[[f stringByAppendingString:@"Error"]]?:([record[@"scanning"] boolValue]?@"正在探测显示器，请稍候":@"此控制不可用 · 请启用 DDC/CI 后刷新"));[self addSubview:slider];
+            Class sliderClass=i?NSSlider.class:BBBrightnessSlider.class;
+            NSSlider*slider=[[sliderClass alloc]initWithFrame:NSMakeRect(sliderX,y,sliderWidth,20)];
+            slider.minValue=0;slider.maxValue=100;slider.doubleValue=[v[@"percent"] doubleValue];slider.target=self;slider.action=i?@selector(volumeChanged:):@selector(brightnessChanged:);
+            slider.controlSize=NSControlSizeSmall;slider.enabled=BBDisplayControlAvailable(record,i?0x62:0x10);slider.continuous=!i;slider.accessibilityLabel=[NSString stringWithFormat:@"%@%@",name.stringValue,i?@"音量":@"亮度"];slider.toolTip=slider.enabled?slider.accessibilityLabel:(record[[f stringByAppendingString:@"Error"]]?:([record[@"scanning"] boolValue]?@"正在探测显示器，请稍候":@"此控制不可用 · 请启用 DDC/CI 后刷新"));[self addSubview:slider];
             if(i)_volumeSlider=slider;else _brightnessSlider=slider;
-            NSTextField*value=BBDisplayLabel(slider.enabled?[NSString stringWithFormat:@"%.0f%%",[v[@"percent"] doubleValue]]:@"—",NSMakeRect(w-238,y,34,20),11,NSColor.labelColor);value.alignment=NSTextAlignmentRight;value.font=[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];[self addSubview:value];
+            NSTextField*value=BBDisplayLabel(slider.enabled?[NSString stringWithFormat:@"%.0f%%",[v[@"percent"] doubleValue]]:@"—",NSMakeRect(w-238,y,42,20),11,NSColor.labelColor);value.alignment=NSTextAlignmentRight;value.font=[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];[self addSubview:value];
+            if(!i)_brightnessValueLabel=value;
         }
         BOOL brightnessAvailable=[record[@"brightnessBridgeAvailable"] boolValue];
         BOOL brightnessEnabled=brightnessAvailable&&[record[@"brightnessBridgeEnabled"]?:record[@"mappingEnabled"] boolValue];
@@ -630,6 +767,17 @@ static NSTextField *BBDisplayLabel(NSString*text,NSRect frame,CGFloat size,NSCol
         self.toolTip=[NSString stringWithFormat:@"%@%@",record[@"status"]?:@"",record[@"nativeBrightness"][@"reason"]?[@"\n系统亮度：" stringByAppendingString:record[@"nativeBrightness"][@"reason"]]:@""];
     }return self;
 }
+- (BOOL)isTrackingBrightness {
+    return [_brightnessSlider isKindOfClass:BBBrightnessSlider.class]&&((BBBrightnessSlider*)_brightnessSlider).tracking;
+}
+- (void)setController:(BBDisplayController*)controller {
+    _controller=controller;
+    NSNumber *pending=[controller pendingBrightnessForIdentity:_record[@"identity"]];
+    if(pending&&_brightnessSlider.enabled){
+        _brightnessSlider.doubleValue=pending.doubleValue;
+        _brightnessValueLabel.stringValue=[NSString stringWithFormat:@"%.0f%%",pending.doubleValue];
+    }
+}
 // Display discovery owns these rows, including retained disconnected rows.
 // Do not inherit an injected context menu from a parent view.
 - (NSMenu*)menuForEvent:(NSEvent*)event {return nil;}
@@ -637,7 +785,11 @@ static NSTextField *BBDisplayLabel(NSString*text,NSRect frame,CGFloat size,NSCol
 - (void)brightnessBridgeChanged:(NSSwitch*)sender {[_controller setBrightnessBridgeEnabled:sender.state==NSControlStateValueOn identity:_record[@"identity"]];}
 - (void)volumeBridgeChanged:(NSSwitch*)sender {if(sender.enabled)[_controller setVolumeBridgeEnabled:sender.state==NSControlStateValueOn identity:_record[@"identity"]];}
 - (void)refreshDisplay:(id)sender {[_controller refreshControls];}
-- (void)brightnessChanged:(NSSlider*)sender {[_controller setPercent:sender.doubleValue code:0x10 identity:_record[@"identity"]];}
+- (void)brightnessChanged:(NSSlider*)sender {
+    if(!sender.enabled)return;
+    _brightnessValueLabel.stringValue=[NSString stringWithFormat:@"%.0f%%",sender.doubleValue];
+    [_controller setPercent:sender.doubleValue code:0x10 identity:_record[@"identity"]];
+}
 - (void)volumeChanged:(NSSlider*)sender {[_controller setPercent:sender.doubleValue code:0x62 identity:_record[@"identity"]];}
 - (void)drawRect:(NSRect)dirty {if(_showsSeparator){[[NSColor separatorColor] setFill];NSRectFill(NSMakeRect(72,0,MAX(0,self.bounds.size.width-88),.5));}}
 @end

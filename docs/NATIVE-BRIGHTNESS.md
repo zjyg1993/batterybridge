@@ -65,6 +65,27 @@ Apple 公开 CoreHID 接口说明：https://developer.apple.com/documentation/co
 
 下一步须在本机配置与 App ID 匹配且包含 HID entitlement 的有效签名身份和描述文件，使用上面的签名构建入口，再实测系统 Feature 请求 → DDC 写入 → 读回确认，以及插拔、休眠和退出恢复。满足之前不发布 1.0.0 正式版。
 
+## 2026-11-18 宿主环境复核
+
+本轮在沙箱外运行同一份 ad-hoc 探针，排除了仅凭沙箱结果推断硬件能力的问题：
+
+| 环节 | 实测结果 |
+| --- | --- |
+| 在线显示器 | 内建屏幕 ID 1、DELL P2418D ID 2 |
+| 系统原生亮度能力 | 内建屏幕 true，外屏 false |
+| 外屏 DDC 只读探测 | 亮度 current=100 / maximum=100 |
+| 外部 AV 通道 | 创建成功，读取有效 256 字节 EDID，无现存 ContainerID |
+| EDID 接口 | CopyEDID 和 SetVirtualEDIDMode 符号均存在；未调用写接口 |
+| IOHIDResource 用户客户端 | 打开失败，0xe00002c2（invalid argument），发生在提交报告描述符之前 |
+| IOHID / CoreHID 虚拟设备 | 沙箱内外均未创建成功 |
+| HID entitlement / 签名身份 | 当前探针 false；宿主查询 0 个有效签名身份 |
+
+新增 `native-bridge brightness-readiness` 只读入口，以及 HID 客户端打开错误码。通用 invalid argument 不足以单独证明唯一失败原因；Apple 的公开 IOHIDResourceDeviceUserClient 实现确实在初始化时检查虚拟 HID entitlement。当前已证实屏幕侧的读取前提具备，HID 创建与有效授权签名仍未通过。接口存在不代表 EDID 写入可用，也不代表真实滑块配对成功。
+
+本轮重新通过原生桥接报告/回退测试和带 AddressSanitizer、UndefinedBehaviorSanitizer 的 EDID、绑定、DDC 确认、退出恢复测试。没有修改真实 EDID、没有写入硬件亮度，没有发布新安装包。后续仍需有效授权签名后验证 HID → ContainerID 配对 → 系统 Feature 请求 → DDC 写入/读回，以及插拔、休眠和退出恢复。
+
+权限检查源码：[Apple IOHIDResourceUserClient.cpp](https://github.com/apple-oss-distributions/IOHIDFamily/blob/main/IOHIDFamily/IOHIDResourceUserClient.cpp)。
+
 ## 接口来源
 
 - Apple IOHIDUserDeviceCreateWithProperties：https://developer.apple.com/documentation/iokit/3334952-iohiduserdevicecreatewithpropert

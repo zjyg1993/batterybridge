@@ -33,15 +33,25 @@
 @property BOOL published;
 @property BOOL refuseSwitch;
 @property BOOL refuseWithdraw;
+@property NSUInteger temporarySwitchFailures;
+@property NSUInteger proxyRemovalReadsRemaining;
 @property NSMutableArray *events;
 @end
 @implementation DBAutomaticBackend
 - (instancetype)init {if((self=[super init])){_published=YES;_events=[NSMutableArray new];}return self;}
-- (NSArray*)outputs {if(_published)return _rows?:@[];return [_rows filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *row,NSDictionary *bindings){return ![row[@"uid"] isEqual:@"ProxyAudioDevice_UID"];}]]?:@[];}
+- (NSArray*)outputs {
+    if(_published)return _rows?:@[];
+    if(_proxyRemovalReadsRemaining){_proxyRemovalReadsRemaining--;return _rows?:@[];}
+    return [_rows filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *row,NSDictionary *bindings){return ![row[@"uid"] isEqual:@"ProxyAudioDevice_UID"];}]]?:@[];
+}
 - (BOOL)setProxyPublished:(BOOL)published error:(NSError**)error {if(!published&&(_refuseWithdraw||[_selected isEqual:@"ProxyAudioDevice_UID"]))return NO;_published=published;[_events addObject:published?@"publish":@"withdraw"];return YES;}
 
 - (NSString*)defaultOutputUID{return _selected;}
-- (BOOL)setDefaultOutputUID:(NSString*)uid error:(NSError**)error {if(_refuseSwitch)return NO;_selected=uid;_switches++;[_events addObject:[@"select:" stringByAppendingString:uid]];return YES;}
+- (BOOL)setDefaultOutputUID:(NSString*)uid error:(NSError**)error {
+    if(_refuseSwitch)return NO;
+    if(_temporarySwitchFailures){_temporarySwitchFailures--;[_events addObject:@"switch failed"];return NO;}
+    _selected=uid;_switches++;[_events addObject:[@"select:" stringByAppendingString:uid]];return YES;
+}
 - (BOOL)configureProxyUID:(NSString*)proxyUID physicalUID:(NSString*)physicalUID error:(NSError**)error {return YES;}
 @end
 static DBFakeSetup *automaticSetup(DBAutomaticBackend *backend,DBMemoryAudioDefaults *preferences){
@@ -87,13 +97,18 @@ int main(void){@autoreleasepool{
     check(!backend.published&&[backend.selected isEqual:@"headphones"],"turning volume bridge off restores physical output and withdraws proxy");
     [automatic updateDisplayBridges:@[managedDisplay] userInitiated:YES];[automatic checkDriver];
     check(backend.published&&[backend.selected isEqual:@"ProxyAudioDevice_UID"],"re-enabling volume bridge republishes and activates proxy");
-    __block BOOL terminated=NO;[backend.events removeAllObjects];[automatic prepareForTermination:^(BOOL ok){terminated=ok;}];
-    NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:.3];while(deadline.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
-    check(terminated&&!backend.published&&[backend.selected isEqual:@"headphones"]&&[backend.events.firstObject isEqual:@"select:headphones"]&&[backend.events.lastObject isEqual:@"withdraw"],"exit restores output before withdrawing and confirms proxy disappears");
+    __block BOOL terminated=NO;[backend.events removeAllObjects];
+    backend.temporarySwitchFailures=1;backend.proxyRemovalReadsRemaining=2;
+    [automatic prepareForTermination:^(BOOL ok){terminated=ok;}];
+    NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:1];
+    while(!terminated&&deadline.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runMode:NSModalPanelRunLoopMode beforeDate:deadline];
+    check(terminated&&!backend.published&&!backend.proxyRemovalReadsRemaining&&[backend.selected isEqual:@"headphones"]&&[backend.events isEqual:@[@"switch failed",@"select:headphones",@"withdraw"]],"one quit request retries the output switch, withdraws in order and waits for HAL in the modal loop");
     automatic=automaticSetup(backend,preferences);[automatic updateDisplayBridges:@[@{@"identity":@"silent",@"connected":@YES,@"volumeBridgeEnabled":@NO}] userInitiated:NO];[automatic beginOnboarding];
     check(automatic.waits==0&&automatic.prompts==0&&!backend.published,"non-audio display never registers proxy or prompts for audio driver");[automatic stop];
     backend.selected=@"headphones";automatic=automaticSetup(backend,preferences);[automatic beginOnboarding];[automatic configureProxy:proxy physical:@[hdmi]];backend.refuseSwitch=YES;__block BOOL refused=NO;
     [automatic prepareForTermination:^(BOOL ok){refused=!ok;}];
+    deadline=[NSDate dateWithTimeIntervalSinceNow:4];
+    while(!refused&&deadline.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:deadline];
     check(refused&&backend.published&&[backend.selected isEqual:@"ProxyAudioDevice_UID"],"failed physical restoration prevents withdrawal and rejects exit");backend.refuseSwitch=NO;[automatic stop];
     puts("PASS: first-launch prompt, automatic proxy startup, exact exit restoration, independent bridge gating and proxy withdrawal");
 }}

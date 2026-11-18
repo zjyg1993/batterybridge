@@ -19,3 +19,13 @@ macOS 15 以上、安装相应 Swift SDK 后运行：
 两个独立 ad-hoc 诊断程序使用同一份生产亮度描述符，直接调用 IOHID 和公开 CoreHID 创建设备，不受主 App 预检开关影响。ContainerID 随机生成，不与显示器匹配，不写 EDID、不发送输入报告，局部设备对象释放后移除。
 
 结果保存在本目录 `build.noindex/hid-capability.json` 与 `corehid-capability.json`。这是诊断进程当前权限环境下的结果；主 App 的签名权限不会自动传递给这些独立程序。创建成功也不能证明系统滑块、屏幕绑定或物理背光已经成功，不能据此发布正式版。
+
+`hid-capability` 另行打开并立即关闭 IOHIDResource 用户客户端，输出底层错误码，不提交设备描述符。打开失败可以定位到设备创建前的访问环节；不能把返回的通用错误码直接解释成签名权限错误。
+
+只读检查原生亮度绑定的屏幕侧前提：
+
+```sh
+./experiments/native-bridge/build.noindex/native-bridge brightness-readiness
+```
+
+输出在线显示器、外部 AV 通道、完整 EDID 校验结果、现有 ContainerID 和虚拟 EDID API 可用性。不修改 EDID、不写 DDC、不证明系统滑块接入成功。Codex 沙箱可能看不到在线屏幕；须在宿主环境复核，不能将沙箱内空枚举当成未连接。

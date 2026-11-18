@@ -14,7 +14,7 @@
 
 // Retained across the DeviceBridge rename for preferences, login items and permissions.
 static NSString *const BundleID=@"local.batterybridge.agent";
-static NSString *const Version=@"0.8.19-preview";
+static NSString *const Version=@"0.9.1-preview";
 static NSString *BBApplicationTitle(void){return [NSString stringWithFormat:@"DeviceBridge %@",Version];}
 static NSString *const InstallPath=@"/Applications/DeviceBridge.app";
 
@@ -745,6 +745,7 @@ static NSTextField*cardLabel(NSString*text,NSRect frame,NSFont*font,NSColor*colo
 @property BOOL handoffPending;
 @property BOOL terminationPending;
 @property BOOL terminationReady;
+@property BOOL terminationReplyPending;
 @end
 static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButton*b=[NSButton buttonWithTitle:title target:target action:action];b.frame=frame;return b;}
 @implementation BBApp
@@ -893,7 +894,10 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
     if(!ok){[self refresh];[self showError:e];return;}[BBPreferences() setBool:requested forKey:@"AutoStartEnabled"];[self refresh];
 }
 - (void)showSettings:(id)sender {[self showWindow];}
-- (void)quit:(id)sender {[NSApp terminate:nil];}
+- (void)quit:(id)sender {
+    if(BBTestingUI||!_displays){[NSApp terminate:sender];return;}
+    [self prepareToQuit];
+}
 - (void)reopenNotification:(NSNotification*)n {[self showWindow];}
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {return NO;}
 
@@ -944,6 +948,9 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
     BOOL denied=NO;for(NSDictionary*r in rows)denied=denied||([r[@"connected"] boolValue]&&[r[@"status"] containsString:@"访问被拒绝"]);
     _authorizeButton.hidden=!denied;_authorizeButton.title=@"授权读取…";_authorizeButton.action=@selector(permission:);
     _authorizeButton.toolTip=@"授权读取设备电量";
+    for(NSView *view in _displayGroup.subviews){
+        if([view isKindOfClass:BBDisplayRow.class]&&((BBDisplayRow*)view).isTrackingBrightness)return;
+    }
     NSString*signature=[NSString stringWithFormat:@"%@:%ld",rows,(long)(NSDate.date.timeIntervalSince1970/120)];if([signature isEqual:_devicesSignature])return;_devicesSignature=signature;
     NSPoint origin=_devicesScroll.contentView.bounds.origin;
     _devicesScroll.autohidesScrollers=NO;[_devicesScroll tile];
@@ -981,14 +988,33 @@ static NSButton*button(NSString*title,id target,SEL action,NSRect frame){NSButto
 - (void)login:(id)sender {if(!BBTestingUI)[SMAppService openSystemSettingsLoginItems];}
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
     if(BBTestingUI||!_displays||_terminationReady)return NSTerminateNow;
-    if(_terminationPending)return NSTerminateLater;_terminationPending=YES;
+    _terminationReplyPending=YES;
+    [self prepareToQuit];
+    return NSTerminateLater;
+}
+- (void)prepareToQuit {
+    if(_terminationPending)return;
+    _terminationPending=YES;
+    // A menu quit can finish asynchronous cleanup on the normal event loop
+    // before asking AppKit to terminate.
     [_displays prepareForTermination:^(BOOL displayRestored){
-        [self.nativeAudio prepareForTermination:^(BOOL audioRestored){
-            BOOL restored=displayRestored&&audioRestored;self.terminationPending=NO;self.terminationReady=restored;
-            if(!restored){NSAlert *alert=[NSAlert new];alert.messageText=@"退出恢复尚未完成";alert.informativeText=audioRestored?@"屏幕识别信息未确认恢复，已暂缓退出，请检查显示器连接后重试。":@"音频输出恢复或代理撤下未完成，已暂缓退出，避免留下无效声音输出。请检查声音输出后重试。";[alert runModal];}
-            [NSApp replyToApplicationShouldTerminate:restored];
-        }];
-    }];return NSTerminateLater;
+        void (^finish)(BOOL)=^(BOOL audioRestored){
+            BOOL restored=displayRestored&&audioRestored;
+            BOOL replyPending=self.terminationReplyPending;
+            self.terminationReplyPending=NO;
+            self.terminationPending=NO;
+            self.terminationReady=restored;
+            if(replyPending)[NSApp replyToApplicationShouldTerminate:restored];
+            else if(restored)[NSApp terminate:nil];
+            if(!restored){
+                NSAlert *alert=[NSAlert new];alert.messageText=@"退出恢复尚未完成";
+                alert.informativeText=audioRestored?@"屏幕识别信息未确认恢复，已暂缓退出，请检查显示器连接后重试。":@"音频输出恢复或代理撤下未完成，已暂缓退出，避免留下无效声音输出。请检查声音输出后重试。";
+                [NSApp activateIgnoringOtherApps:YES];[alert runModal];
+            }
+        };
+        if(self.nativeAudio)[self.nativeAudio prepareForTermination:finish];
+        else finish(YES);
+    }];
 }
 - (void)applicationWillTerminate:(NSNotification*)n {[_nativeAudio stop];[_displays stop];_engine.stopping=YES;[_timer invalidate];if(_lockFD>=0)close(_lockFD);}
 @end

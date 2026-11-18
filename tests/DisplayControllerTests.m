@@ -9,6 +9,7 @@
 @property BOOL ignoreWrite;
 @property BOOL noVolume;
 @property BOOL failedWrite;
+@property(copy) void(^onWrite)(uint16_t);
 @property NSData *nativeEDID;
 @property NSData *factoryEDID;
 - (NSDictionary*)read:(uint8_t)code;
@@ -18,7 +19,7 @@
 - (NSData*)brightnessEDID {return _nativeEDID;}
 - (IOReturn)setBrightnessEDID:(NSData*)edid {_nativeEDID=edid?:_factoryEDID;return kIOReturnSuccess;}
 - (NSDictionary*)read:(uint8_t)code {return (_failedRead||(_noVolume&&code==0x62))?nil:@{@"current":@(_value),@"maximum":@255,@"percent":@(100.0*_value/255)};}
-- (BOOL)write:(uint8_t)code value:(uint16_t)value {_writes++;if(_failedWrite)return NO;if(!_ignoreWrite)_value=value;return YES;}
+- (BOOL)write:(uint8_t)code value:(uint16_t)value {_writes++;if(_failedWrite)return NO;if(!_ignoreWrite)_value=value;if(_onWrite)_onWrite(value);return YES;}
 @end
 @interface BBMemoryDisplayDefaults:NSUserDefaults
 @property NSMutableDictionary*values;
@@ -37,6 +38,7 @@
 - (void)adjustKey:(int)key record:(NSDictionary*)record;
 - (void)updateSystemControls;
 - (BOOL)hasActiveMediaKeyTap;
+- (void)rescanPeriodically:(NSTimer*)timer;
 @end
 @implementation BBQuietDisplayController
 - (NSArray*)connectedScreens {return _fixtureScreens?:@[];}
@@ -127,6 +129,31 @@ int main(void){@autoreleasepool{
     c.fixtureScreens=@[@{@"identity":@"display:test",@"name":@"DELL S2725QS",@"displayID":@1}];c.fixtureChannels=@[bus];
     [c refreshControls];check(c.snapshot.count==1,"refresh never clears the visible row");settle();
     check(c.snapshot.count==1&&[c.snapshot.firstObject[@"connected"] boolValue]&&c.snapshot.firstObject[@"volume"],"scan refreshes both capabilities in place");
+    // Hold a rejected older write in flight while a drag supplies newer goals.
+    dispatch_semaphore_t firstWrite=dispatch_semaphore_create(0),resumeWrite=dispatch_semaphore_create(0);
+    bus.ignoreWrite=YES;
+    bus.onWrite=^(uint16_t value){
+        if(value!=51)return;
+        dispatch_semaphore_signal(firstWrite);
+        dispatch_semaphore_wait(resumeWrite,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC));
+    };
+    before=bus.writes;
+    [c setPercent:20 code:0x10 identity:@"display:test"];
+    check(!dispatch_semaphore_wait(firstWrite,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC)),"older write starts");
+    [c setPercent:55 code:0x10 identity:@"display:test"];
+    [c rescanPeriodically:nil];
+    [c setPercent:85 code:0x10 identity:@"display:test"];
+    check(c.discoveryFinished&&[[c pendingBrightnessForIdentity:@"display:test"] isEqual:@85],"periodic scan waits and latest goal is exposed immediately");
+    bus.ignoreWrite=NO;dispatch_semaphore_signal(resumeWrite);settle();
+    check(bus.writes==before+2&&bus.value==217&&!c.snapshot.firstObject[@"brightnessError"]&&![c pendingBrightnessForIdentity:@"display:test"],"superseded write failure does not block the final goal or publish an error");
+    check(c.discoveryFinished&&[c.snapshot.firstObject[@"brightness"][@"current"] intValue]==217,"deferred scan reads the final value without reverting");
+    bus.onWrite=nil;
+    before=bus.writes;
+    [c rescanPeriodically:nil];
+    check(!c.discoveryFinished&&[c.snapshot.firstObject[@"brightness"][@"current"] intValue]==217,"periodic scan keeps the last known brightness visible");
+    [c setPercent:65 code:0x10 identity:@"display:test"];
+    [c setPercent:70 code:0x10 identity:@"display:test"];settle();
+    check(bus.writes==before+1&&bus.value==179&&[c.snapshot.firstObject[@"brightness"][@"current"] intValue]==179,"latest input during a scan writes through the rediscovered channel");
     [c rescan];[c rescan];check(c.snapshot.count==1,"overlapping reconfiguration scans keep rows visible");settle();settle();
     check(c.snapshot.count==1&&[c.snapshot.firstObject[@"mappingEnabled"] boolValue],"overlapping scans finish with the current mapping");
     c.fixtureScreens=@[];[c rescan];check(c.snapshot.count==1,"empty enumeration does not immediately hide a known display");settle();

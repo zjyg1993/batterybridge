@@ -20,6 +20,7 @@ static void ensure(BOOL ok,const char*message){if(!ok){fprintf(stderr,"FAIL: %s\
 @property BOOL activeTap;
 @property BOOL listenGranted;
 @property NSMutableArray *requests;
+@property NSNumber *pendingBrightness;
 @end
 @implementation BBPermissionDisplayController
 - (BOOL)accessibilityAuthorized {return _trusted;}
@@ -27,7 +28,9 @@ static void ensure(BOOL ok,const char*message){if(!ok){fprintf(stderr,"FAIL: %s\
 - (BOOL)inputMonitoringAuthorized {return _listenGranted;}
 - (void)setPercent:(double)percent code:(uint8_t)code identity:(NSString*)identity {
     if(!_requests)_requests=[NSMutableArray new];[_requests addObject:@{@"percent":@(percent),@"code":@(code),@"identity":identity}];
+    if(code==0x10)_pendingBrightness=@(percent);
 }
+- (NSNumber*)pendingBrightnessForIdentity:(NSString*)identity {return [identity isEqual:@"display:test"]?_pendingBrightness:nil;}
 @end
 int main(int argc,const char*argv[]){@autoreleasepool{
     BBTestingUI=YES;[NSApplication sharedApplication];[BBPreferences() registerDefaults:@{@"ReportInterval":@3600,@"AutoStartEnabled":@YES}];
@@ -245,6 +248,23 @@ int main(int argc,const char*argv[]){@autoreleasepool{
     ensure(!unsignedRow.brightnessBridgeSwitch.enabled&&unsignedRow.brightnessBridgeSwitch.state==NSControlStateValueOff&&unsignedRow.brightnessSlider.enabled&&unsignedRow.volumeBridgeSwitch.enabled,"missing HID signing disables only native brightness bridge and never presents an enabled bridge");
     ensure(audioRow.brightnessSlider.frame.size.width>=140&&audioRow.volumeSlider.frame.size.width==audioRow.brightnessSlider.frame.size.width,"both hardware control tracks are enlarged equally");
     ensure(displayRows==1,"display discovered alongside wireless receivers");
+    BBDisplayRow *trackingRow=(BBDisplayRow*)app.displayGroup.subviews.firstObject;
+    NSSlider *brightnessSlider=trackingRow.brightnessSlider;
+    ensure(brightnessSlider.continuous,"brightness sends changes during a drag");
+    [brightnessSlider setValue:@YES forKey:@"tracking"];
+    brightnessSlider.doubleValue=85;
+    [brightnessSlider sendAction:brightnessSlider.action to:brightnessSlider.target];
+    ensure([[[trackingRow valueForKey:@"brightnessValueLabel"] stringValue] isEqual:@"85%"],"percentage follows the slider immediately");
+    NSMutableDictionary *olderReading=[displayFixture mutableCopy];olderReading[@"brightness"]=@{@"percent":@60};
+    [app.displays setValue:@[olderReading] forKey:@"snapshot"];[app refresh];
+    ensure(app.displayGroup.subviews.firstObject==trackingRow&&brightnessSlider.intValue==85,"refresh preserves the slider while the mouse is tracking");
+    [brightnessSlider setValue:@NO forKey:@"tracking"];[app refresh];
+    BBDisplayRow *rebuiltRow=(BBDisplayRow*)app.displayGroup.subviews.firstObject;
+    ensure(rebuiltRow!=trackingRow&&rebuiltRow.brightnessSlider.intValue==85&&[[[rebuiltRow valueForKey:@"brightnessValueLabel"] stringValue] isEqual:@"85%"],"rebuilt row shows the latest goal over the older readback");
+    permissionDisplays.pendingBrightness=nil;
+    NSMutableDictionary *confirmedReading=[displayFixture mutableCopy];confirmedReading[@"brightness"]=@{@"percent":@85};
+    [app.displays setValue:@[confirmedReading] forKey:@"snapshot"];[app refresh];
+    ensure(((BBDisplayRow*)app.displayGroup.subviews.firstObject).brightnessSlider.intValue==85,"confirming the final value does not move the thumb backwards");
     ensure(app.displayGroup.groupHeight==96&&app.wirelessGroup.groupHeight==fixtures.count*96,"each category has its own grouped rows");
     ensure(NSMaxY(app.displayGroup.frame)<NSMinY(app.wirelessHeading.frame)&&NSMaxY(app.wirelessGroup.frame)<NSMinY(app.generalHeading.frame),"displays precede wireless devices and general settings");
     ensure(app.settingsGroup.superview==app.devicesView&&app.authorizeButton.superview==app.devicesView,"settings and header belong to the same scroll document");
